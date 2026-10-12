@@ -53,6 +53,7 @@ class X64Backend : public Backend {
   bool Initialize(Processor* processor) override;
 
   void CommitExecutableRange(uint32_t guest_low, uint32_t guest_high) override;
+  void ResetIndirection(uint32_t guest_address) override;
 
   std::unique_ptr<Assembler> CreateAssembler() override;
 

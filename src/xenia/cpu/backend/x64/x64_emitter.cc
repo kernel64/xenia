@@ -405,6 +405,11 @@ uint64_t ResolveFunction(void* raw_context, uint64_t target_address) {
   auto fn = thread_state->processor()->ResolveFunction(
       static_cast<uint32_t>(target_address));
   assert_not_null(fn);
+  if (!fn) {
+    xe::FatalError(fmt::format("ResolveFunction: no function at {:08X}",
+                               static_cast<uint32_t>(target_address)));
+    return 0;
+  }
   auto x64_fn = static_cast<X64Function*>(fn);
   uint64_t addr = reinterpret_cast<uint64_t>(x64_fn->machine_code());
 
@@ -415,7 +420,11 @@ void X64Emitter::Call(const hir::Instr* instr, GuestFunction* function) {
   assert_not_null(function);
   auto fn = static_cast<X64Function*>(function);
   // Resolve address to the function to call and store in rax.
-  if (fn->machine_code()) {
+  // Functions in dynamic (self-modifying) code may be dropped and translated
+  // again: never embed their current host address, always go through the
+  // indirection table, which is reset when they are dropped.
+  bool dynamic_target = processor_->IsDynamicCode(function->address());
+  if (fn->machine_code() && !dynamic_target) {
     // TODO(benvanik): is it worth it to do this? It removes the need for
     // a ResolveFunction call, but makes the table less useful.
     assert_zero(uint64_t(fn->machine_code()) & 0xFFFFFFFF00000000);
@@ -452,11 +461,42 @@ void X64Emitter::Call(const hir::Instr* instr, GuestFunction* function) {
 }
 
 void X64Emitter::CallIndirect(const hir::Instr* instr,
-                              const Xbyak::Reg64& reg) {
+                              const Xbyak::Reg64& target_reg) {
+  Xbyak::Reg64 reg = target_reg;
   // Check if return.
   if (instr->flags & hir::CALL_POSSIBLE_RETURN) {
     cmp(reg.cvt32(), dword[rsp + StackLayout::GUEST_RET_ADDR]);
     je(epilog_label(), CodeGenerator::T_NEAR);
+
+    // A return to somewhere else than where this function was called from.
+    // If it was called from dynamic code (Processor::IsDynamicCode), go back
+    // to that caller with the real target in dynamic_resume: it continues
+    // there (see InstrEmit_branch). Otherwise the jump below would leave the
+    // caller's host frame behind for good.
+    const auto& ranges = processor_->dynamic_code_ranges();
+    if (!ranges.empty()) {
+      if (reg.cvt32() != ebx) {
+        mov(ebx, reg.cvt32());
+      }
+      reg = rbx;
+      Xbyak::Label not_dynamic;
+      mov(eax, dword[rsp + StackLayout::GUEST_RET_ADDR]);
+      for (size_t r = 0; r < ranges.size(); ++r) {
+        Xbyak::Label next_range;
+        Xbyak::Label& miss =
+            r + 1 < ranges.size() ? next_range : not_dynamic;
+        cmp(eax, ranges[r].first);
+        jb(miss, CodeGenerator::T_NEAR);
+        cmp(eax, ranges[r].second);
+        jae(miss, CodeGenerator::T_NEAR);
+        mov(eax, ebx);
+        mov(qword[GetContextReg() + offsetof(ppc::PPCContext, dynamic_resume)],
+            rax);
+        jmp(epilog_label(), CodeGenerator::T_NEAR);
+        L(next_range);
+      }
+      L(not_dynamic);
+    }
   }
 
   // Load the pointer to the indirection table maintained in X64CodeCache.

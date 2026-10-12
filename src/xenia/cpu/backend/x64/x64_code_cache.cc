@@ -210,6 +210,9 @@ void X64CodeCache::PlaceGuestCode(uint32_t guest_address, void* machine_code,
         generated_code_write_base_ + generated_code_offset_;
 
     high_mark = generated_code_offset_;
+    if (high_mark > kGeneratedCodeSize) {
+      xe::FatalError("Code cache full (host code for guest functions)");
+    }
 
     // Store in map. It is maintained in sorted order of host PC dependent on
     // us also being append-only.
@@ -231,6 +234,8 @@ void X64CodeCache::PlaceGuestCode(uint32_t guest_address, void* machine_code,
       if (high_mark <= old_commit_mark) break;
 
       new_commit_mark = old_commit_mark + 16_MiB;
+      XELOGI("Code cache: {} MB of host code, {} functions",
+             new_commit_mark >> 20, generated_code_map_.size());
       if (generated_code_execute_base_ == generated_code_write_base_) {
         xe::memory::AllocFixed(generated_code_execute_base_, new_commit_mark,
                                xe::memory::AllocationType::kCommit,

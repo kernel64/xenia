@@ -44,6 +44,11 @@ class EntryTable {
 
   std::vector<Function*> FindWithAddress(uint32_t address);
 
+  // Forgets the entry at address (ready or failed) so that the next
+  // GetOrCreate translates it again. Returns its function (may be null).
+  // The Entry itself is leaked on purpose: a caller may still hold it.
+  bool Remove(uint32_t address, Function** out_function);
+
  private:
   xe::global_critical_region global_critical_region_;
   // TODO(benvanik): replace with a better data structure.

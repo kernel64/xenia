@@ -44,6 +44,11 @@ class Module {
   virtual Symbol::Status DeclareVariable(uint32_t address, Symbol** out_symbol);
 
   Symbol::Status DefineFunction(Function* symbol);
+
+  // Removes the function at address from the lookup map, so the next
+  // DeclareFunction creates a new one (dynamic code rewritten by the guest).
+  // The old object stays owned by the module: its code may still be running.
+  void ForgetFunction(uint32_t address);
   Symbol::Status DefineVariable(Symbol* symbol);
 
   void ForEachFunction(std::function<void(Function*)> callback);

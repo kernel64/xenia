@@ -13,6 +13,8 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "xenia/base/cvar.h"
@@ -115,6 +117,28 @@ class Processor {
   Function* LookupFunction(uint32_t address);
   Function* LookupFunction(Module* module, uint32_t address);
   Function* ResolveFunction(uint32_t address);
+
+  // Guest code generated at run time (a title's own recompiler writing
+  // PowerPC code into a writable + executable section). Functions there are
+  // translated like any other, but they are dropped when the guest says it
+  // rewrote their memory (KeSweepIcacheRange), calls to them always go through
+  // the indirection table, and calls made from them never push a host frame.
+  void AddDynamicCodeRange(uint32_t low, uint32_t high);
+  bool IsDynamicCode(uint32_t address) const {
+    for (const auto& range : dynamic_code_ranges_) {
+      if (address >= range.first && address < range.second) {
+        return true;
+      }
+    }
+    return false;
+  }
+  bool has_dynamic_code() const { return !dynamic_code_ranges_.empty(); }
+  const std::vector<std::pair<uint32_t, uint32_t>>& dynamic_code_ranges()
+      const {
+    return dynamic_code_ranges_;
+  }
+  // Drops every translated function overlapping [address, address + size).
+  void InvalidateCodeRange(uint32_t address, uint32_t size);
 
   bool Execute(ThreadState* thread_state, uint32_t address);
   bool ExecuteRaw(ThreadState* thread_state, uint32_t address);
@@ -256,6 +280,17 @@ class Processor {
 
   EntryTable entry_table_;
   xe::global_critical_region global_critical_region_;
+
+  // See AddDynamicCodeRange. Functions translated from dynamic code, indexed
+  // by 4 KB page: (start, last instruction address) of each function.
+  std::vector<std::pair<uint32_t, uint32_t>> dynamic_code_ranges_;
+  std::unordered_map<uint32_t, std::vector<std::pair<uint32_t, uint32_t>>>
+      dynamic_code_pages_;
+  void RegisterDynamicFunction(uint32_t start, uint32_t end);
+  uint64_t dynamic_invalidations_ = 0;
+  uint64_t dynamic_functions_dropped_ = 0;
+  uint64_t dynamic_functions_defined_ = 0;
+  uint64_t dynamic_guest_bytes_ = 0;
   ExecutionState execution_state_ = ExecutionState::kPaused;
   std::vector<std::unique_ptr<Module>> modules_;
   Module* builtin_module_ = nullptr;

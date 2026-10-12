@@ -62,6 +62,10 @@ class X64CodeCache : public CodeCache {
   void AddIndirection(uint32_t guest_address, uint32_t host_address);
 
   void CommitExecutableRange(uint32_t guest_low, uint32_t guest_high);
+  // Points the slot back at the ResolveFunction thunk.
+  void ResetIndirection(uint32_t guest_address) {
+    AddIndirection(guest_address, indirection_default_value_);
+  }
 
   void PlaceHostCode(uint32_t guest_address, void* machine_code,
                      const EmitFunctionInfo& func_info,
@@ -93,7 +97,9 @@ class X64CodeCache : public CodeCache {
   // This is picked to be high enough to cover whatever we can reasonably
   // expect. If we hit issues with this it probably means some corner case
   // in analysis triggering.
-  static const size_t kMaximumFunctionCount = 100000;
+  // Titles with their own recompiler (dynamic code) have their functions
+  // translated again after each rewrite: far more than 100000 over a session.
+  static const size_t kMaximumFunctionCount = 1000000;
 
   struct UnwindReservation {
     size_t data_size = 0;

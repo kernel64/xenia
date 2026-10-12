@@ -48,6 +48,9 @@ class Backend {
 
   virtual void CommitExecutableRange(uint32_t guest_low,
                                      uint32_t guest_high) = 0;
+  // The function at guest_address was dropped: calls through the
+  // indirection table must resolve (translate) it again.
+  virtual void ResetIndirection(uint32_t guest_address) {}
 
   virtual std::unique_ptr<Assembler> CreateAssembler() = 0;
 

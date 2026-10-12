@@ -37,4 +37,6 @@ DECLARE_bool(break_condition_truncate);
 
 DECLARE_bool(break_on_debugbreak);
 
+DECLARE_int32(dynamic_code_window);
+
 #endif  // XENIA_CPU_CPU_FLAGS_H_

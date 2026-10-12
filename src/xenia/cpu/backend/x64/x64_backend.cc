@@ -155,6 +155,10 @@ void X64Backend::CommitExecutableRange(uint32_t guest_low,
   code_cache_->CommitExecutableRange(guest_low, guest_high);
 }
 
+void X64Backend::ResetIndirection(uint32_t guest_address) {
+  code_cache_->ResetIndirection(guest_address);
+}
+
 std::unique_ptr<Assembler> X64Backend::CreateAssembler() {
   return std::make_unique<X64Assembler>(this);
 }

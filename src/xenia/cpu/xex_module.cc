@@ -1082,6 +1082,24 @@ bool XexModule::LoadContinue() {
     page += desc.page_count;
   }
 
+  // Sections linked writable + executable (/SECTION:name,ERW) hold code the
+  // title writes at run time (its own recompiler). Code pages are writable
+  // on the console; keep these writable here and let the processor treat
+  // their contents as self-modifying code.
+  for (const auto& section : pe_sections_) {
+    const uint32_t kScnMemExecute = 0x20000000;
+    const uint32_t kScnMemWrite = 0x80000000;
+    if ((section.flags & kScnMemExecute) && (section.flags & kScnMemWrite) &&
+        section.size) {
+      heap->Protect(section.address, section.size,
+                    kMemoryProtectRead | kMemoryProtectWrite);
+      processor_->AddDynamicCodeRange(section.address,
+                                      section.address + section.size);
+      XELOGI("XEX section {} ({:08X}, {} bytes) is writable + executable",
+             section.name, section.address, section.size);
+    }
+  }
+
   return true;
 }
 

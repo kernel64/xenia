@@ -55,3 +55,9 @@ DEFINE_bool(break_condition_truncate, true, "truncate value to 32-bits", "CPU");
 
 DEFINE_bool(break_on_debugbreak, true, "int3 on JITed __debugbreak requests.",
             "CPU");
+
+DEFINE_int32(dynamic_code_window, 0,
+             "In code a title generates at run time (writable + executable "
+             "sections), forward branches farther than this many bytes from "
+             "a function's start end the function (tail calls).",
+             "CPU");

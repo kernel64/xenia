@@ -210,6 +210,9 @@ bool Win32X64CodeCache::Initialize() {
 Win32X64CodeCache::UnwindReservation
 Win32X64CodeCache::RequestUnwindReservation(uint8_t* entry_address) {
   assert_false(unwind_table_count_ >= kMaximumFunctionCount);
+  if (unwind_table_count_ >= kMaximumFunctionCount) {
+    xe::FatalError("Code cache: too many functions (unwind table full)");
+  }
   UnwindReservation unwind_reservation;
   unwind_reservation.data_size = xe::round_up(kUnwindInfoSize, 16);
   unwind_reservation.table_slot = unwind_table_count_++;
