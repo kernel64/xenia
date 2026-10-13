@@ -15,6 +15,7 @@
 #include "xenia/base/logging.h"
 #include "xenia/base/memory.h"
 #include "xenia/base/profiling.h"
+#include "xenia/cpu/cpu_flags.h"
 #include "xenia/cpu/ppc/ppc_decode_data.h"
 #include "xenia/cpu/ppc/ppc_frontend.h"
 #include "xenia/cpu/ppc/ppc_opcode_info.h"
@@ -64,6 +65,19 @@ bool PPCScanner::Scan(GuestFunction* function, FunctionDebugInfo* debug_info) {
   size_t blocks_found = 0;
   bool in_block = false;
   bool starts_with_mfspr_lr = false;
+  // Code generated at run time (see Processor::AddDynamicCodeRange) is laid
+  // out block after block, with branches to slow paths far away: following
+  // every forward target would make one function of everything after the
+  // start. There, only targets close to the start keep the function going;
+  // farther ones become tail calls to functions of their own.
+  const bool dynamic_code =
+      frontend_->processor()->IsDynamicCode(start_address);
+  const uint32_t kDynamicCodeWindow =
+      uint32_t(std::max(0, cvars::dynamic_code_window));
+  auto counts_as_target = [&](uint32_t target) {
+    return !dynamic_code || (target >= start_address &&
+                             target - start_address < kDynamicCodeWindow);
+  };
   while (true) {
     uint32_t code =
         xe::load_and_swap<uint32_t>(memory->TranslateVirtual(address));
@@ -161,6 +175,14 @@ bool PPCScanner::Scan(GuestFunction* function, FunctionDebugInfo* debug_info) {
           ends_fn = true;
         }
 
+        // Dynamic code: an unconditional branch out of the window is a tail
+        // call, the end of the function (blocks follow each other there).
+        if (!ends_fn && dynamic_code && furthest_target <= address &&
+            !counts_as_target(target)) {
+          LOGPPC("function end {:08X} (dynamic code, tail branch)", address);
+          ends_fn = true;
+        }
+
         // If the target is a __restgprlr_* method it's the end of a function.
         // Note that sometimes functions stick this in a basic block *inside*
         // of the function somewhere, so ensure we don't have any branches over
@@ -201,7 +223,7 @@ bool PPCScanner::Scan(GuestFunction* function, FunctionDebugInfo* debug_info) {
         }
         */
 
-        if (!ends_fn && !IsRestGprLr(target)) {
+        if (!ends_fn && !IsRestGprLr(target) && counts_as_target(target)) {
           furthest_target = std::max(furthest_target, target);
 
           // TODO(benvanik): perhaps queue up for a speculative check? I think
@@ -226,7 +248,7 @@ bool PPCScanner::Scan(GuestFunction* function, FunctionDebugInfo* debug_info) {
 
         // TODO(benvanik): GetOrInsertFunction? it's likely a BB
 
-        if (!IsRestGprLr(target)) {
+        if (!IsRestGprLr(target) && counts_as_target(target)) {
           furthest_target = std::max(furthest_target, target);
         }
       }

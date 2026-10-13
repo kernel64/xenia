@@ -154,7 +154,9 @@ bool PPCHIRBuilder::Emit(GuestFunction* function, uint32_t flags) {
     instr_offset_list_[offset] = first_instr;
 
     if (opcode == PPCOpcode::kInvalid) {
-      XELOGE("Invalid instruction {:08X} {:08X}", address, code);
+      if (!frontend_->processor()->IsDynamicCode(address)) {
+        XELOGE("Invalid instruction {:08X} {:08X}", address, code);
+      }
       Comment("INVALID!");
       // TraceInvalidInstruction(i);
       continue;
@@ -177,12 +179,18 @@ bool PPCHIRBuilder::Emit(GuestFunction* function, uint32_t flags) {
     i.opcode_info = &opcode_info;
     if (!opcode_info.emit || opcode_info.emit(*this, i)) {
       auto& disasm_info = GetOpcodeDisasmInfo(opcode);
-      XELOGE(
-          "Unimplemented instr {:08X} {:08X} {} - report the game to Xenia "
-          "developers; to skip, disable break_on_unimplemented_instructions",
-          address, code, disasm_info.name);
+      if (!frontend_->processor()->IsDynamicCode(address)) {
+        XELOGE(
+            "Unimplemented instr {:08X} {:08X} {} - report the game to Xenia "
+            "developers; to skip, disable break_on_unimplemented_instructions",
+            address, code, disasm_info.name);
+      }
       Comment("UNIMPLEMENTED!");
-      if (cvars::break_on_unimplemented_instructions) {
+      // Code generated at run time may keep data right after a call (the
+      // callee returns past it): translated as instructions, it is never
+      // run, so no break there.
+      if (cvars::break_on_unimplemented_instructions &&
+          !frontend_->processor()->IsDynamicCode(address)) {
         DebugBreak();
       }
     }

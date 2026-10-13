@@ -7,6 +7,7 @@
  ******************************************************************************
  */
 
+#include <algorithm>
 #include "xenia/cpu/processor.h"
 
 #include "xenia/base/assert.h"
@@ -233,17 +234,22 @@ Function* Processor::ResolveFunction(uint32_t address) {
     // Grab symbol declaration.
     auto function = LookupFunction(address);
     if (!function) {
+      XELOGE("ResolveFunction({:08X}): no module contains it", address);
       entry->status = Entry::STATUS_FAILED;
       return nullptr;
     }
 
     if (!DemandFunction(function)) {
+      XELOGE("ResolveFunction({:08X}): translation failed", address);
       entry->status = Entry::STATUS_FAILED;
       return nullptr;
     }
     entry->function = function;
     entry->end_address = function->end_address();
     status = entry->status = Entry::STATUS_READY;
+    if (IsDynamicCode(address)) {
+      RegisterDynamicFunction(address, entry->end_address);
+    }
   }
   if (status == Entry::STATUS_READY) {
     // Ready to use.
@@ -252,6 +258,151 @@ Function* Processor::ResolveFunction(uint32_t address) {
     // Failed or bad state.
     return nullptr;
   }
+}
+
+void Processor::AddDynamicCodeRange(uint32_t low, uint32_t high) {
+  auto global_lock = global_critical_region_.Acquire();
+  dynamic_code_ranges_.emplace_back(low, high);
+  backend_->AddDynamicCodeRange(low, high);
+  XELOGI("Dynamic (self-modifying) code range {:08X}-{:08X}", low, high);
+}
+
+void Processor::RegisterDynamicFunction(uint32_t start, uint32_t end) {
+  if (end < start) {
+    end = start;
+  }
+  auto global_lock = global_critical_region_.Acquire();
+  for (uint32_t page = start >> 12; page <= (end >> 12); ++page) {
+    dynamic_code_pages_[page].emplace_back(start, end);
+  }
+  ++dynamic_functions_defined_;
+  dynamic_guest_bytes_ += end + 4 - start;
+  if ((dynamic_functions_defined_ & 4095) == 0) {
+    XELOGI(
+        "Dynamic code: {} functions translated ({} guest bytes, {} per "
+        "function), {} invalidation calls, {} functions dropped",
+        dynamic_functions_defined_, dynamic_guest_bytes_,
+        dynamic_guest_bytes_ / dynamic_functions_defined_,
+        dynamic_invalidations_, dynamic_functions_dropped_);
+  }
+}
+
+void Processor::InvalidateCodeRange(uint32_t address, uint32_t size) {
+  if (!size || dynamic_code_ranges_.empty()) {
+    return;
+  }
+  uint32_t low = address;
+  uint32_t high = address + size;  // exclusive
+  if (high < low) {
+    high = 0xFFFFFFFFu;
+  }
+  bool dynamic = false;
+  for (const auto& range : dynamic_code_ranges_) {
+    if (low < range.second && range.first < high) {
+      dynamic = true;
+      break;
+    }
+  }
+  if (!dynamic) {
+    return;
+  }
+
+  auto global_lock = global_critical_region_.Acquire();
+  ++dynamic_invalidations_;
+  // Functions overlapping the range (start .. last instruction + 4).
+  std::vector<std::pair<uint32_t, uint32_t>> dropped;
+  for (uint32_t page = low >> 12; page <= ((high - 1) >> 12); ++page) {
+    auto it = dynamic_code_pages_.find(page);
+    if (it == dynamic_code_pages_.end()) {
+      continue;
+    }
+    for (const auto& fn_range : it->second) {
+      if (fn_range.first < high && low < fn_range.second + 4) {
+        dropped.push_back(fn_range);
+      }
+    }
+  }
+  for (const auto& fn_range : dropped) {
+    // Unindex it from every page it covers (it may be listed several times).
+    for (uint32_t page = fn_range.first >> 12;
+         page <= (fn_range.second >> 12); ++page) {
+      auto it = dynamic_code_pages_.find(page);
+      if (it == dynamic_code_pages_.end()) {
+        continue;
+      }
+      auto& list = it->second;
+      for (size_t i = 0; i < list.size();) {
+        if (list[i] == fn_range) {
+          list[i] = list.back();
+          list.pop_back();
+        } else {
+          ++i;
+        }
+      }
+      if (list.empty()) {
+        dynamic_code_pages_.erase(it);
+      }
+    }
+    Function* function = nullptr;
+    if (!entry_table_.Remove(fn_range.first, &function)) {
+      continue;  // already dropped (listed twice) or being translated
+    }
+    if (function) {
+      // The old Function (and its host code, which may be running right now)
+      // stays alive; only the lookups forget it.
+      function->module()->ForgetFunction(fn_range.first);
+    }
+    backend_->ResetIndirection(fn_range.first);
+    ++dynamic_functions_dropped_;
+  }
+  if ((dynamic_invalidations_ & 0xFFFF) == 0) {
+    XELOGI("Dynamic code: {} invalidations, {} functions dropped",
+           dynamic_invalidations_, dynamic_functions_dropped_);
+  }
+  MaybeRecycleDynamicCode();
+}
+
+void Processor::MaybeRecycleDynamicCode() {
+  const size_t capacity = backend_->DynamicCodeCapacity();
+  if (!capacity || backend_->DynamicCodeUsed() < capacity / 2) {
+    return;
+  }
+  // A translated function of the zone still running below us would return
+  // into recycled memory: wait for a call made from outside the zone (the
+  // title's recompiler, compiling or linking a block from its dispatcher).
+  if (backend_->DynamicCodeOnStack()) {
+    if ((dynamic_recycles_deferred_++ & 0x3FF) == 0) {
+      XELOGI("Dynamic code: zone {} MB full, recycling deferred",
+             backend_->DynamicCodeUsed() >> 20);
+    }
+    return;
+  }
+  // Every function translated from dynamic code is forgotten: lookups,
+  // symbols, indirection slots. They are translated again when next called.
+  std::vector<uint32_t> starts;
+  for (const auto& page : dynamic_code_pages_) {
+    for (const auto& fn_range : page.second) {
+      starts.push_back(fn_range.first);
+    }
+  }
+  std::sort(starts.begin(), starts.end());
+  starts.erase(std::unique(starts.begin(), starts.end()), starts.end());
+  for (uint32_t start : starts) {
+    Function* function = nullptr;
+    if (!entry_table_.Remove(start, &function)) {
+      continue;
+    }
+    if (function) {
+      function->module()->ForgetFunction(start);
+    }
+    backend_->ResetIndirection(start);
+  }
+  dynamic_code_pages_.clear();
+  size_t used = backend_->DynamicCodeUsed();
+  backend_->ResetDynamicCode();
+  ++dynamic_recycles_;
+  XELOGI("Dynamic code: zone recycled ({} MB, {} functions), {} times so far",
+         used >> 20, starts.size(), dynamic_recycles_);
 }
 
 Function* Processor::LookupFunction(uint32_t address) {

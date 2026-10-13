@@ -14,6 +14,7 @@
 #include "xenia/cpu/ppc/ppc_context.h"
 #include "xenia/cpu/ppc/ppc_frontend.h"
 #include "xenia/cpu/ppc/ppc_hir_builder.h"
+#include "xenia/cpu/processor.h"
 
 #include <stddef.h>
 
@@ -46,6 +47,13 @@ int InstrEmit_branch(PPCHIRBuilder& f, const char* src, uint64_t cia,
     // If LR is not set this call will never return here.
     call_flags |= CALL_TAIL;
   }
+  // Code generated at run time (a title's own recompiler) does not always
+  // keep to call/return pairs: it calls routines that return after data
+  // placed behind the call, or that leave through an exit routine. Such a
+  // return comes back here with the real target in dynamic_resume (see
+  // X64Emitter::CallIndirect), and we go on from there.
+  const bool resume_check =
+      lk && f.frontend()->processor()->IsDynamicCode(uint32_t(cia));
 
   // TODO(benvanik): set CALL_TAIL if !lk and the last block in the fn.
   //                 This is almost always a jump to restore gpr.
@@ -140,6 +148,14 @@ int InstrEmit_branch(PPCHIRBuilder& f, const char* src, uint64_t cia,
       f.CallIndirect(nia, call_flags);
     }
   }
+}
+
+if (resume_check) {
+  Value* resume =
+      f.LoadContext(offsetof(PPCContext, dynamic_resume), INT64_TYPE);
+  f.StoreContext(offsetof(PPCContext, dynamic_resume), f.LoadZeroInt64());
+  f.CallIndirectTrue(f.CompareNE(resume, f.LoadZeroInt64()), resume,
+                     CALL_TAIL | CALL_POSSIBLE_RETURN);
 }
 
 return 0;

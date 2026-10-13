@@ -426,6 +426,13 @@ typedef struct PPCContext_s {
   // Value of last reserved load
   uint64_t reserved_val;
 
+  // Dynamic (self-modifying) code support, see Processor::IsDynamicCode: a
+  // function called from dynamic code that returns (blr) somewhere else than
+  // just after the call stores that address here and returns to its caller,
+  // which then continues at it. 0 when no such return is pending.
+  uint64_t dynamic_resume;
+  uint64_t dynamic_reserved[7];
+
   static std::string GetRegisterName(PPCRegister reg);
   std::string GetStringFromValue(PPCRegister reg) const;
   void SetValueFromString(PPCRegister reg, std::string value);

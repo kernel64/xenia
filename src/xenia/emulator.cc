@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <cinttypes>
+#include <cstdio>
 
 #include "config.h"
 #include "third_party/fmt/include/fmt/format.h"
@@ -25,6 +26,9 @@
 #include "xenia/base/logging.h"
 #include "xenia/base/mapped_memory.h"
 #include "xenia/base/platform.h"
+#if XE_PLATFORM_WIN32
+#include "xenia/base/platform_win.h"
+#endif
 #include "xenia/base/string.h"
 #include "xenia/cpu/backend/code_cache.h"
 #include "xenia/cpu/backend/null_backend.h"
@@ -542,6 +546,77 @@ void Emulator::LaunchNextTitle() {
   CompleteLaunch("", next_title);
 }
 
+#if XE_PLATFORM_WIN32
+// Diagnosis: an exception outside guest code that nothing handles kills the
+// process silently. Write its address and the host call stack (symbolized
+// with dbghelp when available) to xenia_host_crash.txt in the working folder.
+static void LogHostException(Exception* ex) {
+  static bool logged = false;
+  if (logged || ex->code() != Exception::Code::kAccessViolation) {
+    return;
+  }
+  logged = true;
+  FILE* f = std::fopen("xenia_host_crash.txt", "w");
+  if (!f) {
+    return;
+  }
+  std::fprintf(f, "access violation at pc %016llX, fault address %016llX\n",
+               (unsigned long long)ex->pc(),
+               (unsigned long long)ex->fault_address());
+  std::fprintf(f, "xenia.exe base %016llX\n",
+               (unsigned long long)(uintptr_t)GetModuleHandleW(nullptr));
+  std::fflush(f);
+  typedef BOOL(WINAPI * SymInitializeFn)(HANDLE, PCSTR, BOOL);
+  typedef BOOL(WINAPI * SymFromAddrFn)(HANDLE, DWORD64, PDWORD64, void*);
+  HMODULE dbghelp = LoadLibraryW(L"dbghelp.dll");
+  SymInitializeFn sym_init =
+      dbghelp ? (SymInitializeFn)GetProcAddress(dbghelp, "SymInitialize")
+              : nullptr;
+  SymFromAddrFn sym_from_addr =
+      dbghelp ? (SymFromAddrFn)GetProcAddress(dbghelp, "SymFromAddr")
+              : nullptr;
+  bool symbols = sym_init && sym_from_addr &&
+                 sym_init(GetCurrentProcess(), nullptr, TRUE);
+  void* frames[64];
+  USHORT count = RtlCaptureStackBackTrace(0, 64, frames, nullptr);
+  std::vector<uint64_t> addresses;
+  addresses.push_back(ex->pc());
+  for (USHORT i = 0; i < count; ++i) {
+    addresses.push_back(uint64_t(frames[i]));
+  }
+  for (uint64_t address : addresses) {
+    struct {
+      ULONG SizeOfStruct;
+      ULONG TypeIndex;
+      ULONG64 Reserved[2];
+      ULONG Index;
+      ULONG Size;
+      ULONG64 ModBase;
+      ULONG Flags;
+      ULONG64 Value;
+      ULONG64 Address;
+      ULONG Register;
+      ULONG Scope;
+      ULONG Tag;
+      ULONG NameLen;
+      ULONG MaxNameLen;
+      CHAR Name[256];
+    } info = {};
+    info.SizeOfStruct = 88;  // sizeof(SYMBOL_INFO)
+    info.MaxNameLen = 255;
+    DWORD64 displacement = 0;
+    if (symbols &&
+        sym_from_addr(GetCurrentProcess(), address, &displacement, &info)) {
+      std::fprintf(f, "  %016llX %s+0x%llX\n", (unsigned long long)address,
+                   info.Name, (unsigned long long)displacement);
+    } else {
+      std::fprintf(f, "  %016llX\n", (unsigned long long)address);
+    }
+  }
+  std::fclose(f);
+}
+#endif
+
 bool Emulator::ExceptionCallbackThunk(Exception* ex, void* data) {
   return reinterpret_cast<Emulator*>(data)->ExceptionCallback(ex);
 }
@@ -564,6 +639,9 @@ bool Emulator::ExceptionCallback(Exception* ex) {
 
   if (!(ex->pc() >= code_base && ex->pc() < code_end)) {
     // Didn't occur in guest code. Let it pass.
+#if XE_PLATFORM_WIN32
+    LogHostException(ex);
+#endif
     return false;
   }
 

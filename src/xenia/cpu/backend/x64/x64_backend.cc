@@ -155,6 +155,26 @@ void X64Backend::CommitExecutableRange(uint32_t guest_low,
   code_cache_->CommitExecutableRange(guest_low, guest_high);
 }
 
+void X64Backend::ResetIndirection(uint32_t guest_address) {
+  code_cache_->ResetIndirection(guest_address);
+}
+
+void X64Backend::AddDynamicCodeRange(uint32_t low, uint32_t high) {
+  code_cache_->AddDynamicRange(low, high);
+}
+
+size_t X64Backend::DynamicCodeUsed() { return code_cache_->dynamic_code_used(); }
+
+size_t X64Backend::DynamicCodeCapacity() {
+  return code_cache_->dynamic_code_capacity();
+}
+
+bool X64Backend::DynamicCodeOnStack() {
+  return code_cache_->IsDynamicCodeOnStack();
+}
+
+void X64Backend::ResetDynamicCode() { code_cache_->ResetDynamicCode(); }
+
 std::unique_ptr<Assembler> X64Backend::CreateAssembler() {
   return std::make_unique<X64Assembler>(this);
 }

@@ -12,6 +12,7 @@
 #include "xenia/base/assert.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/math.h"
+#include "xenia/cpu/processor.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/util/shim_utils.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_private.h"
@@ -435,6 +436,20 @@ void MmSetAddressProtect_entry(lpvoid_t base_address, dword_t region_size,
   heap->Protect(base_address.guest_address(), region_size, protect);
 }
 DECLARE_XBOXKRNL_EXPORT1(MmSetAddressProtect, kMemory, kImplemented);
+
+// Called after a title writes code (its own recompiler): translated functions
+// overlapping the range are dropped and translated again when next called.
+void KeSweepIcacheRange_entry(lpvoid_t base_address, dword_t size) {
+  kernel_state()->processor()->InvalidateCodeRange(
+      base_address.guest_address(), size);
+}
+DECLARE_XBOXKRNL_EXPORT2(KeSweepIcacheRange, kMemory, kImplemented,
+                         kHighFrequency);
+
+// Data cache maintenance has nothing to do here.
+void KeSweepDcacheRange_entry(lpvoid_t base_address, dword_t size) {}
+DECLARE_XBOXKRNL_EXPORT2(KeSweepDcacheRange, kMemory, kImplemented,
+                         kHighFrequency);
 
 dword_result_t MmQueryAllocationSize_entry(lpvoid_t base_address) {
   auto heap = kernel_state()->memory()->LookupHeap(base_address);
