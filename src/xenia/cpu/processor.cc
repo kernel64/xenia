@@ -7,6 +7,7 @@
  ******************************************************************************
  */
 
+#include <algorithm>
 #include "xenia/cpu/processor.h"
 
 #include "xenia/base/assert.h"
@@ -262,6 +263,7 @@ Function* Processor::ResolveFunction(uint32_t address) {
 void Processor::AddDynamicCodeRange(uint32_t low, uint32_t high) {
   auto global_lock = global_critical_region_.Acquire();
   dynamic_code_ranges_.emplace_back(low, high);
+  backend_->AddDynamicCodeRange(low, high);
   XELOGI("Dynamic (self-modifying) code range {:08X}-{:08X}", low, high);
 }
 
@@ -357,6 +359,50 @@ void Processor::InvalidateCodeRange(uint32_t address, uint32_t size) {
     XELOGI("Dynamic code: {} invalidations, {} functions dropped",
            dynamic_invalidations_, dynamic_functions_dropped_);
   }
+  MaybeRecycleDynamicCode();
+}
+
+void Processor::MaybeRecycleDynamicCode() {
+  const size_t capacity = backend_->DynamicCodeCapacity();
+  if (!capacity || backend_->DynamicCodeUsed() < capacity / 2) {
+    return;
+  }
+  // A translated function of the zone still running below us would return
+  // into recycled memory: wait for a call made from outside the zone (the
+  // title's recompiler, compiling or linking a block from its dispatcher).
+  if (backend_->DynamicCodeOnStack()) {
+    if ((dynamic_recycles_deferred_++ & 0x3FF) == 0) {
+      XELOGI("Dynamic code: zone {} MB full, recycling deferred",
+             backend_->DynamicCodeUsed() >> 20);
+    }
+    return;
+  }
+  // Every function translated from dynamic code is forgotten: lookups,
+  // symbols, indirection slots. They are translated again when next called.
+  std::vector<uint32_t> starts;
+  for (const auto& page : dynamic_code_pages_) {
+    for (const auto& fn_range : page.second) {
+      starts.push_back(fn_range.first);
+    }
+  }
+  std::sort(starts.begin(), starts.end());
+  starts.erase(std::unique(starts.begin(), starts.end()), starts.end());
+  for (uint32_t start : starts) {
+    Function* function = nullptr;
+    if (!entry_table_.Remove(start, &function)) {
+      continue;
+    }
+    if (function) {
+      function->module()->ForgetFunction(start);
+    }
+    backend_->ResetIndirection(start);
+  }
+  dynamic_code_pages_.clear();
+  size_t used = backend_->DynamicCodeUsed();
+  backend_->ResetDynamicCode();
+  ++dynamic_recycles_;
+  XELOGI("Dynamic code: zone recycled ({} MB, {} functions), {} times so far",
+         used >> 20, starts.size(), dynamic_recycles_);
 }
 
 Function* Processor::LookupFunction(uint32_t address) {

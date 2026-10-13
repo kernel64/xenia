@@ -54,6 +54,11 @@ class X64Backend : public Backend {
 
   void CommitExecutableRange(uint32_t guest_low, uint32_t guest_high) override;
   void ResetIndirection(uint32_t guest_address) override;
+  void AddDynamicCodeRange(uint32_t low, uint32_t high) override;
+  size_t DynamicCodeUsed() override;
+  size_t DynamicCodeCapacity() override;
+  bool DynamicCodeOnStack() override;
+  void ResetDynamicCode() override;
 
   std::unique_ptr<Assembler> CreateAssembler() override;
 

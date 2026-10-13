@@ -184,42 +184,50 @@ void X64CodeCache::PlaceGuestCode(uint32_t guest_address, void* machine_code,
   {
     auto global_lock = global_critical_region_.Acquire();
 
-    low_mark = generated_code_offset_;
+    // Dynamic code (see AddDynamicRange) goes into its own zone.
+    const bool dynamic = guest_address && IsDynamicGuest(guest_address);
+    size_t& offset = dynamic ? dynamic_code_offset_ : generated_code_offset_;
+    low_mark = offset;
 
     // Reserve code.
     // Always move the code to land on 16b alignment.
-    code_execute_address =
-        generated_code_execute_base_ + generated_code_offset_;
+    code_execute_address = generated_code_execute_base_ + offset;
     code_execute_address_out = code_execute_address;
-    uint8_t* code_write_address =
-        generated_code_write_base_ + generated_code_offset_;
+    uint8_t* code_write_address = generated_code_write_base_ + offset;
     code_write_address_out = code_write_address;
-    generated_code_offset_ += xe::round_up(func_info.code_size.total, 16);
+    offset += xe::round_up(func_info.code_size.total, 16);
 
-    auto tail_write_address =
-        generated_code_write_base_ + generated_code_offset_;
+    auto tail_write_address = generated_code_write_base_ + offset;
 
     // Reserve unwind info.
     // We go on the high size of the unwind info as we don't know how big we
     // need it, and a few extra bytes of padding isn't the worst thing.
-    unwind_reservation = RequestUnwindReservation(generated_code_write_base_ +
-                                                  generated_code_offset_);
-    generated_code_offset_ += xe::round_up(unwind_reservation.data_size, 16);
+    reserving_dynamic_ = dynamic;
+    unwind_reservation =
+        RequestUnwindReservation(generated_code_write_base_ + offset);
+    reserving_dynamic_ = false;
+    offset += xe::round_up(unwind_reservation.data_size, 16);
 
-    auto end_write_address =
-        generated_code_write_base_ + generated_code_offset_;
+    auto end_write_address = generated_code_write_base_ + offset;
 
-    high_mark = generated_code_offset_;
-    if (high_mark > kGeneratedCodeSize) {
+    high_mark = offset;
+    if (dynamic) {
+      if (high_mark > kGeneratedCodeSize + 1) {
+        xe::FatalError(
+            "Code cache full (dynamic code: it was never safe to recycle)");
+      }
+    } else if (high_mark > kDynamicZoneOffset) {
       xe::FatalError("Code cache full (host code for guest functions)");
     }
 
     // Store in map. It is maintained in sorted order of host PC dependent on
     // us also being append-only.
-    generated_code_map_.emplace_back(
-        (uint64_t(code_execute_address - generated_code_execute_base_) << 32) |
-            generated_code_offset_,
-        function_info);
+    (dynamic ? dynamic_code_map_ : generated_code_map_)
+        .emplace_back(
+            (uint64_t(code_execute_address - generated_code_execute_base_)
+             << 32) |
+                offset,
+            function_info);
 
     // TODO(DrChat): The following code doesn't really need to be under the
     // global lock except for PlaceCode (but it depends on the previous code
@@ -227,11 +235,11 @@ void X64CodeCache::PlaceGuestCode(uint32_t guest_address, void* machine_code,
 
     // If we are going above the high water mark of committed memory, commit
     // some more. It's ok if multiple threads do this, as redundant commits
-    // aren't harmful.
+    // aren't harmful. (The dynamic zone is committed whole.)
     size_t old_commit_mark, new_commit_mark;
     do {
       old_commit_mark = generated_code_commit_mark_;
-      if (high_mark <= old_commit_mark) break;
+      if (dynamic || high_mark <= old_commit_mark) break;
 
       new_commit_mark = old_commit_mark + 16_MiB;
       XELOGI("Code cache: {} MB of host code, {} functions",
@@ -340,10 +348,43 @@ uint32_t X64CodeCache::PlaceData(const void* data, size_t length) {
   return uint32_t(uintptr_t(data_address));
 }
 
+void X64CodeCache::AddDynamicRange(uint32_t low, uint32_t high) {
+  auto global_lock = global_critical_region_.Acquire();
+  if (dynamic_ranges_.empty()) {
+    // The whole zone is committed once (it is refilled from its start).
+    const size_t size = kGeneratedCodeSize + 1 - kDynamicZoneOffset;
+    if (generated_code_execute_base_ == generated_code_write_base_) {
+      xe::memory::AllocFixed(generated_code_execute_base_ + kDynamicZoneOffset,
+                             size, xe::memory::AllocationType::kCommit,
+                             xe::memory::PageAccess::kExecuteReadWrite);
+    } else {
+      xe::memory::AllocFixed(generated_code_execute_base_ + kDynamicZoneOffset,
+                             size, xe::memory::AllocationType::kCommit,
+                             xe::memory::PageAccess::kExecuteReadOnly);
+      xe::memory::AllocFixed(generated_code_write_base_ + kDynamicZoneOffset,
+                             size, xe::memory::AllocationType::kCommit,
+                             xe::memory::PageAccess::kReadWrite);
+    }
+    if (generated_code_offset_ > kDynamicZoneOffset) {
+      xe::FatalError("Code cache: no room left for a dynamic code zone");
+    }
+  }
+  dynamic_ranges_.emplace_back(low, high);
+}
+
+void X64CodeCache::ResetDynamicCode() {
+  auto global_lock = global_critical_region_.Acquire();
+  dynamic_code_offset_ = kDynamicZoneOffset;
+  dynamic_code_map_.clear();
+  ResetDynamicUnwind();
+}
+
 GuestFunction* X64CodeCache::LookupFunction(uint64_t host_pc) {
   uint32_t key = uint32_t(host_pc - kGeneratedCodeExecuteBase);
+  const bool dynamic = !dynamic_ranges_.empty() && key >= kDynamicZoneOffset;
+  const auto& map = dynamic ? dynamic_code_map_ : generated_code_map_;
   void* fn_entry = std::bsearch(
-      &key, generated_code_map_.data(), generated_code_map_.size() + 1,
+      &key, map.data(), dynamic ? map.size() : map.size() + 1,
       sizeof(std::pair<uint32_t, Function*>),
       [](const void* key_ptr, const void* element_ptr) {
         auto key = *reinterpret_cast<const uint32_t*>(key_ptr);

@@ -417,7 +417,12 @@ uint64_t ResolveFunction(void* raw_context, uint64_t target_address) {
 }
 
 void X64Emitter::Call(const hir::Instr* instr, GuestFunction* function) {
-  assert_not_null(function);
+  if (!function) {
+    // A call to no function: data after a call in code generated at run time
+    // (Harissa64's slot tables), translated but never run. A trap in place.
+    ud2();
+    return;
+  }
   auto fn = static_cast<X64Function*>(function);
   // Resolve address to the function to call and store in rax.
   // Functions in dynamic (self-modifying) code may be dropped and translated

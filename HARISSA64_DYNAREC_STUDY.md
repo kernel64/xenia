@@ -132,3 +132,12 @@ Lancement conseillé :
 ```powershell
 Start-Process E:\vs-projects\xenia\build\bin\Windows\Release\xenia.exe -WorkingDirectory E:\h64v2_xenia\dynarec\work -ArgumentList '--mount_cache=true','--d3d12_readback_resolve=true','--d3d12_readback_resolve_skip_write_combined=true','"E:\h64v2_xenia\dynarec\game\harissa64v2.xex"'
 ```
+
+## 8. Longues sessions (2026-10-13)
+
+Deux obstacles levés :
+
+1. **Cache de code recyclé.** La zone du code x64 est coupée en deux (128 Mo chacune) : le code ordinaire du titre en bas, le code dynamique (traductions des sections W+X) en haut, avec sa propre table hôte → fonction et sa propre table d'unwind Windows (`RtlAddGrowableFunctionTable`, recréée à chaque vidage). Quand la zone dynamique est à moitié pleine, `KeSweepIcacheRange` → `Processor::MaybeRecycleDynamicCode` oublie toutes les fonctions dynamiques (entrées, symboles, cases d'indirection) et la zone repart de zéro — seulement si aucune adresse de la zone n'est sur la pile hôte du thread (`RtlCaptureStackBackTrace`), sinon ce sera au prochain appel (le recompilateur de Harissa en fait à chaque compilation de bloc depuis son dispatcher).
+2. **Données traduites comme du code.** Harissa met des tables juste après certains appels (l'appelé revient après). Dans le code dynamique, une instruction inconnue n'arrête plus la traduction (`DebugBreak`, journal) et un appel vers « aucune fonction » devient un `ud2` au lieu d'un plantage (`X64Emitter::Call` avec un pointeur nul).
+
+Mesures : Conker, 15 100 VI (> 4 min, l'ancienne limite était ~2 min 30) avec 6 recyclages de 64 Mo (~35 000 fonctions chacun), 57 VI/s en moyenne ; F-Zero X, 6000 VI dont la course (avant : arrêt après ~30 s de course), 60 VI/s.

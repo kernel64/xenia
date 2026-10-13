@@ -287,6 +287,11 @@ class Processor {
   std::unordered_map<uint32_t, std::vector<std::pair<uint32_t, uint32_t>>>
       dynamic_code_pages_;
   void RegisterDynamicFunction(uint32_t start, uint32_t end);
+  // Empties the backend's dynamic code zone when it is half full and no host
+  // code of it is on this thread's stack (the lock must be held).
+  void MaybeRecycleDynamicCode();
+  uint64_t dynamic_recycles_ = 0;
+  uint64_t dynamic_recycles_deferred_ = 0;
   uint64_t dynamic_invalidations_ = 0;
   uint64_t dynamic_functions_dropped_ = 0;
   uint64_t dynamic_functions_defined_ = 0;

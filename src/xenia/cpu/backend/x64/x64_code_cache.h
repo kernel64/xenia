@@ -80,6 +80,29 @@ class X64CodeCache : public CodeCache {
 
   GuestFunction* LookupFunction(uint64_t host_pc) override;
 
+  // Dynamic code (titles with their own recompiler): host code for guest
+  // functions in these guest ranges goes into the upper zone of the cache,
+  // which ResetDynamicCode empties (the lower zone keeps everything else).
+  void AddDynamicRange(uint32_t low, uint32_t high);
+  bool IsDynamicGuest(uint32_t guest_address) const {
+    for (const auto& range : dynamic_ranges_) {
+      if (guest_address >= range.first && guest_address < range.second) {
+        return true;
+      }
+    }
+    return false;
+  }
+  size_t dynamic_code_used() const {
+    return dynamic_code_offset_ - kDynamicZoneOffset;
+  }
+  size_t dynamic_code_capacity() const {
+    return kGeneratedCodeSize + 1 - kDynamicZoneOffset;
+  }
+  virtual bool IsDynamicCodeOnStack() { return true; }
+  // Forgets every function placed in the dynamic zone (the processor has
+  // dropped them from its lookups first) and starts filling it again.
+  void ResetDynamicCode();
+
  protected:
   // All executable code falls within 0x80000000 to 0x9FFFFFFF, so we can
   // only map enough for lookups within that range.
@@ -100,11 +123,14 @@ class X64CodeCache : public CodeCache {
   // Titles with their own recompiler (dynamic code) have their functions
   // translated again after each rewrite: far more than 100000 over a session.
   static const size_t kMaximumFunctionCount = 1000000;
+  // Start of the dynamic code zone in the generated code region (128 MB each).
+  static const size_t kDynamicZoneOffset = 0x08000000;
 
   struct UnwindReservation {
     size_t data_size = 0;
     size_t table_slot = 0;
     uint8_t* entry_address = 0;
+    bool dynamic = false;
   };
 
   X64CodeCache();
@@ -116,6 +142,15 @@ class X64CodeCache : public CodeCache {
                          const EmitFunctionInfo& func_info,
                          void* code_execute_address,
                          UnwindReservation unwind_reservation) {}
+  virtual void ResetDynamicUnwind() {}
+
+  // Dynamic code zone (see AddDynamicRange): guest ranges, fill offset (from
+  // the start of the generated code region) and its own host PC -> function map.
+  std::vector<std::pair<uint32_t, uint32_t>> dynamic_ranges_;
+  size_t dynamic_code_offset_ = kDynamicZoneOffset;
+  std::vector<std::pair<uint64_t, GuestFunction*>> dynamic_code_map_;
+  // Set while PlaceGuestCode reserves unwind info for the dynamic zone.
+  bool reserving_dynamic_ = false;
 
   std::filesystem::path file_name_;
   xe::memory::FileMappingHandle mapping_ =
