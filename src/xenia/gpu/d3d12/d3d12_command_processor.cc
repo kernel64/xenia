@@ -46,6 +46,12 @@ DEFINE_bool(d3d12_readback_resolve, false,
             "causes mid-frame synchronization, so it has a huge performance "
             "impact.",
             "D3D12");
+DEFINE_bool(d3d12_readback_resolve_skip_write_combined, false,
+            "With d3d12_readback_resolve, do not read back resolves into "
+            "write-combined memory (usually textures the GPU samples later, "
+            "which the CPU does not read): each readback waits for the GPU. "
+            "Harissa64 reads its copy-backs from CPU-cached memory only.",
+            "D3D12");
 DEFINE_bool(d3d12_submit_on_primary_buffer_end, true,
             "Submit the command list when a PM4 primary buffer ends if it's "
             "possible to submit immediately to try to reduce frame latency.",
@@ -2492,6 +2498,29 @@ void D3D12CommandProcessor::InitializeTrace() {
   }
 }
 
+// Whether the physical range lies in pages allocated write-combined (in any of
+// the physical memory views).
+static bool IsPhysicalRangeWriteCombined(Memory& memory, uint32_t address,
+                                         uint32_t length) {
+  static const uint32_t kPageSizes[] = {4096, 64 * 1024, 16 * 1024 * 1024};
+  for (uint32_t page_size : kPageSizes) {
+    auto heap =
+        static_cast<PhysicalHeap*>(memory.LookupHeapByType(true, page_size));
+    uint32_t base = heap->heap_base();
+    uint32_t offset = heap->GetPhysicalAddress(base);
+    if (address < offset || address - offset + length > heap->heap_size()) {
+      continue;
+    }
+    HeapAllocationInfo info;
+    if (!heap->QueryRegionInfo(base + (address - offset), &info) ||
+        !(info.state & kMemoryAllocationCommit)) {
+      continue;
+    }
+    return (info.protect & kMemoryProtectWriteCombine) != 0;
+  }
+  return false;
+}
+
 bool D3D12CommandProcessor::IssueCopy() {
 #if XE_GPU_FINE_GRAINED_DRAW_SCOPES
   SCOPE_profile_cpu_f("gpu");
@@ -2505,7 +2534,10 @@ bool D3D12CommandProcessor::IssueCopy() {
     return false;
   }
   if (cvars::d3d12_readback_resolve &&
-      !texture_cache_->IsDrawResolutionScaled() && written_length) {
+      !texture_cache_->IsDrawResolutionScaled() && written_length &&
+      !(cvars::d3d12_readback_resolve_skip_write_combined &&
+        IsPhysicalRangeWriteCombined(*memory_, written_address,
+                                     written_length))) {
     // Read the resolved data on the CPU.
     ID3D12Resource* readback_buffer = RequestReadbackBuffer(written_length);
     if (readback_buffer != nullptr) {

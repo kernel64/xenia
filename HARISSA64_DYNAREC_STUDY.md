@@ -111,3 +111,24 @@ Réglage du scanner (Conker, 1500 VI) : avec une fenêtre de 8 Ko, 353 octets in
 3. **Code hors module** (pour d'autres titres) : un module « dynamique » ajouté par `MmSetAddressProtect`/`NtProtectVirtualMemory`/`NtAllocateVirtualMemory` quand la protection demande l'exécution, et des fonctions créées à la demande dans ces plages.
 4. **Porter le patch sur Xenia Canary** (la version de l'utilisateur, mars 2025). Le code CPU est proche mais a divergé (noms des options, cache de code), donc le patch ne s'appliquera sans doute pas tel quel. En attendant, le `xenia.exe` de cette branche suffit pour les tests de Harissa64.
 5. Côté Harissa64 : documenter dans `docs-local/DEVELOPMENT.md` la procédure ci-dessus (exe, options `--mount_cache`, `--d3d12_readback_resolve`, `cpu=dynarec`), et ajouter un test scripté (OoT 400 VI, captures comparées à l'interpréteur).
+
+## 7. Vitesse de Conker (2026-10-13)
+
+Mesure : état `conker_bubble` (en jeu), 1500 VI, i7-11800H.
+
+| Étape | VI/s | CPU Harissa (ms/image) | Rendu (ms/image) |
+|---|---|---|---|
+| Départ | 24 | 38,6 (dont 23 ms de helpers) | 25 (copy-backs 21,6) |
+| FPU natif dans Xenia (Harissa `529b9b5`) | 33–38 | 27 (attend le rendu) | 25 |
+| + `--d3d12_readback_resolve_skip_write_combined=true` | **60** | 7,6 | 9,8 |
+
+1. **Côté Harissa** : le recompilateur coupait son FPU natif quand les drapeaux d'exception du FPSCR ne sont pas fiables (`h64_fenv_reliable`, faux dans Xenia), donc ~56 000 instructions COP1 par image passaient par l'interpréteur. Le mode FPU rapide (`fastfpu=1`, défaut) ne lit jamais ces drapeaux : il tourne maintenant en natif aussi dans Xenia.
+2. **Côté Xenia** : avec `d3d12_readback_resolve`, chaque resolve était relu vers la mémoire invitée, avec une attente complète du GPU (`AwaitAllQueueOperationsCompletion`, ~8 ms). Harissa en fait plusieurs par image (changements d'image, présentations), mais le CPU ne lit que ses copy-backs, qui vont dans de la mémoire « CPU cached » (`D3DUSAGE_CPU_CACHED_MEMORY`). La nouvelle option `d3d12_readback_resolve_skip_write_combined` (défaut `false`) saute la relecture quand la destination est dans des pages write-combined (`IsPhysicalRangeWriteCombined` dans `d3d12_command_processor.cc`, d'après les pages des trois vues physiques). Les captures `shots=` de Harissa passent maintenant par une copie en mémoire cached (Harissa `6e6a9a5`), sinon elles étaient noires.
+
+Image identique avec et sans l'option (capture de la fenêtre), page du livre de Castlevania identique au pixel près. Limite : un copy-back d'une image de plus de 640 pixels de large lit directement une texture write-combined (chemin de secours de Harissa) et ne serait pas à jour avec l'option.
+
+Lancement conseillé :
+
+```powershell
+Start-Process E:\vs-projects\xenia\build\bin\Windows\Release\xenia.exe -WorkingDirectory E:\h64v2_xenia\dynarec\work -ArgumentList '--mount_cache=true','--d3d12_readback_resolve=true','--d3d12_readback_resolve_skip_write_combined=true','"E:\h64v2_xenia\dynarec\game\harissa64v2.xex"'
+```
