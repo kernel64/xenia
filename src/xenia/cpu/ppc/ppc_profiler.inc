@@ -17,7 +17,7 @@ namespace {
 struct ProfRec {
   uint32_t code;
   uint64_t n, taken, lhs, alias, l1i, l2i, l1d, l2d, st2, dep1, ldUse, fpStall,
-      fpDep;
+      fpDep, dw;   // dw: the other word of a doubleword stored just before
 };
 
 struct ProfCache {
@@ -89,16 +89,16 @@ void ProfDump() {
   std::lock_guard<std::mutex> lock(prof_mutex);
   for (auto* t : prof_threads) {
     if (!t->recorded) continue;
-    uint32_t head[4] = {0x32525050u /* PPR2: with edges */, t->thread_id, (uint32_t)t->recs.size(), 0};
+    uint32_t head[4] = {0x33525050u /* PPR3: edges, dw */, t->thread_id, (uint32_t)t->recs.size(), 0};
     fwrite(head, 4, 4, f);
     fwrite(&t->recorded, 8, 1, f);
     for (auto& kv : t->recs) {
       const ProfRec& r = kv.second;
       uint32_t a[2] = {kv.first, r.code};
-      uint64_t v[13] = {r.n, r.taken, r.lhs, r.alias, r.l1i, r.l2i, r.l1d,
-                        r.l2d, r.st2, r.dep1, r.ldUse, r.fpStall, r.fpDep};
+      uint64_t v[14] = {r.n, r.taken, r.lhs, r.alias, r.l1i, r.l2i, r.l1d,
+                        r.l2d, r.st2, r.dep1, r.ldUse, r.fpStall, r.fpDep, r.dw};
       fwrite(a, 4, 2, f);
-      fwrite(v, 8, 13, f);
+      fwrite(v, 8, 14, f);
     }
     uint64_t ne = t->edges.size();
     fwrite(&ne, 8, 1, f);
@@ -323,8 +323,12 @@ void ProfileInsn(PPCContext* ctx, void* arg0, void* arg1) {
         r.lhs++;
         break;
       }
+      if ((a >> 3) == (d.ea >> 3)) {
+        r.dw++;   // same doubleword, other bytes
+        break;
+      }
       if (((a ^ d.ea) & 0xFF8) == 0) {
-        r.alias++;
+        r.alias++;   // 4 KB apart
         break;
       }
     }
