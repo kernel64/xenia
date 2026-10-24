@@ -9,6 +9,14 @@
 
 #include "xenia/cpu/ppc/ppc_frontend.h"
 
+#include <atomic>
+#include <chrono>
+#include <cstdio>
+#include <mutex>
+#include <thread>
+#include <unordered_map>
+#include <vector>
+
 #include "xenia/base/atomic.h"
 #include "xenia/base/logging.h"
 #include "xenia/cpu/ppc/ppc_context.h"
@@ -16,6 +24,9 @@
 #include "xenia/cpu/ppc/ppc_opcode_info.h"
 #include "xenia/cpu/ppc/ppc_translator.h"
 #include "xenia/cpu/processor.h"
+#include "xenia/base/byte_order.h"
+#include "xenia/base/math.h"
+#include "xenia/cpu/cpu_flags.h"
 
 namespace xe {
 namespace cpu {
@@ -90,6 +101,8 @@ void SyscallHandler(PPCContext* ppc_context, void* arg0, void* arg1) {
   }
 }
 
+#include "xenia/cpu/ppc/ppc_profiler.inc"
+
 bool PPCFrontend::Initialize() {
   void* arg0 = reinterpret_cast<void*>(&xe::global_critical_region::mutex());
   void* arg1 = reinterpret_cast<void*>(&builtins_.global_lock_count);
@@ -101,6 +114,8 @@ bool PPCFrontend::Initialize() {
       processor_->DefineBuiltin("LeaveGlobalLock", LeaveGlobalLock, arg0, arg1);
   builtins_.syscall_handler = processor_->DefineBuiltin(
       "SyscallHandler", SyscallHandler, nullptr, nullptr);
+  builtins_.profile_insn =
+      processor_->DefineBuiltin("ProfileInsn", ProfileInsn, nullptr, nullptr);
   return true;
 }
 

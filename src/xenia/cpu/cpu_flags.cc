@@ -56,6 +56,19 @@ DEFINE_bool(break_condition_truncate, true, "truncate value to 32-bits", "CPU");
 DEFINE_bool(break_on_debugbreak, true, "int3 on JITed __debugbreak requests.",
             "CPU");
 
+DEFINE_bool(ppc_profile, false,
+            "Instruction profile: a call before every guest instruction records "
+            "counts, taken branches, load-hit-stores, a Xenon cache model "
+            "(ppc_frontend.cc, ProfileInsn).",
+            "CPU");
+DEFINE_string(ppc_profile_out, "ppcprof.bin", "ppc_profile: output file.",
+              "CPU");
+DEFINE_uint64(ppc_profile_delay, 60,
+              "ppc_profile: seconds (wall clock) before recording starts.", "CPU");
+DEFINE_uint64(ppc_profile_count, 200000000,
+              "ppc_profile: instructions of the busiest thread to record, then "
+              "the profile is written.",
+              "CPU");
 DEFINE_int32(dynamic_code_window, 0,
              "In code a title generates at run time (writable + executable "
              "sections), forward branches farther than this many bytes from "

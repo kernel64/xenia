@@ -39,4 +39,9 @@ DECLARE_bool(break_on_debugbreak);
 
 DECLARE_int32(dynamic_code_window);
 
+DECLARE_bool(ppc_profile);
+DECLARE_string(ppc_profile_out);
+DECLARE_uint64(ppc_profile_delay);
+DECLARE_uint64(ppc_profile_count);
+
 #endif  // XENIA_CPU_CPU_FLAGS_H_

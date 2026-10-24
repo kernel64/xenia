@@ -417,9 +417,11 @@ uint64_t ResolveFunction(void* raw_context, uint64_t target_address) {
 }
 
 void X64Emitter::Call(const hir::Instr* instr, GuestFunction* function) {
-  if (!function) {
+  if (!function || !function->is_guest()) {
     // A call to no function: data after a call in code generated at run time
-    // (Harissa64's slot tables), translated but never run. A trap in place.
+    // (Harissa64's slot tables, CubeX's link data), translated but never run.
+    // A builtin's address reached that way is no guest function either (its
+    // vtable has no machine_code). A trap in place.
     ud2();
     return;
   }
