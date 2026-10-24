@@ -57,6 +57,7 @@ struct ProfThread {
   uint32_t thread_id = 0;
   uint64_t count = 0, recorded = 0;
   std::unordered_map<uint32_t, ProfRec> recs;
+  std::unordered_map<uint64_t, uint64_t> edges;   // taken: (from << 32) | to
   uint32_t prev_pc = 0;
   ProfRec* prev_rec = nullptr;
   uint32_t last_iline = 0xFFFFFFFF;
@@ -88,7 +89,7 @@ void ProfDump() {
   std::lock_guard<std::mutex> lock(prof_mutex);
   for (auto* t : prof_threads) {
     if (!t->recorded) continue;
-    uint32_t head[4] = {0x46525050u /* PPRF */, t->thread_id, (uint32_t)t->recs.size(), 0};
+    uint32_t head[4] = {0x32525050u /* PPR2: with edges */, t->thread_id, (uint32_t)t->recs.size(), 0};
     fwrite(head, 4, 4, f);
     fwrite(&t->recorded, 8, 1, f);
     for (auto& kv : t->recs) {
@@ -98,6 +99,12 @@ void ProfDump() {
                         r.l2d, r.st2, r.dep1, r.ldUse, r.fpStall, r.fpDep};
       fwrite(a, 4, 2, f);
       fwrite(v, 8, 13, f);
+    }
+    uint64_t ne = t->edges.size();
+    fwrite(&ne, 8, 1, f);
+    for (auto& kv : t->edges) {
+      uint64_t e[2] = {kv.first, kv.second};
+      fwrite(e, 8, 2, f);
     }
   }
   fclose(f);
@@ -204,7 +211,10 @@ void Decode(const PPCContext* ctx, uint32_t code, Dec& d) {
         case 231: case 135: case 167: case 199: case 647: case 679:
           d.gsrc = (rA ? Bit(rA) : 0) | Bit(rB); d.mem = 2;
           d.ea = (base() + gpr(rB)) & ~15u; d.size = 16; break;
-        case 1014: case 278: case 54: case 86: case 470: case 246:
+        case 278: case 246:   // dcbt, dcbtst: a prefetch (the cache model fills the line)
+          d.gsrc = (rA ? Bit(rA) : 0) | Bit(rB); d.mem = 3;
+          d.ea = base() + gpr(rB); d.size = 1; break;
+        case 1014: case 54: case 86: case 470:
           d.gsrc = (rA ? Bit(rA) : 0) | Bit(rB); break;
         case 28: case 60: case 124: case 284: case 316: case 412: case 444:
         case 476: case 24: case 536: case 792: case 27: case 539: case 794:
@@ -259,7 +269,10 @@ void ProfileInsn(PPCContext* ctx, void* arg0, void* arg1) {
   ProfRec& r = t->recs[pc];
   r.code = code;
   r.n++;
-  if (t->prev_rec && pc != t->prev_pc + 4) t->prev_rec->taken++;
+  if (t->prev_rec && pc != t->prev_pc + 4) {
+    t->prev_rec->taken++;
+    t->edges[((uint64_t)t->prev_pc << 32) | pc]++;
+  }
   // instruction fetch: a new 128-byte line
   uint32_t iline = pc >> 7;
   if (iline != t->last_iline) {
@@ -320,6 +333,12 @@ void ProfileInsn(PPCContext* ctx, void* arg0, void* arg1) {
       r.l1d++;
       if (t->l2.Access(line)) r.l2d++;
     }
+  } else if (d.mem == 3) {
+    // a prefetch: into L2 (and L1 D), no stall counted (an upper bound: the
+    // model has no timing, the line is there when used)
+    uint32_t line = d.ea >> 7;
+    t->l2.Access(line);
+    t->l1d.Access(line);
   } else if (d.mem == 2) {
     uint32_t k = t->st_pos++ & 31;
     t->st_addr[k] = d.ea;
