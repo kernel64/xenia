@@ -70,6 +70,12 @@ DEFINE_string(
     "or the module specified by the game. Leave blank to launch the default "
     "module.",
     "General");
+DEFINE_bool(log_host_exceptions, false,
+            "Windows: write the first access violation outside guest code to "
+            "xenia_host_crash.txt (address and host call stack), for "
+            "diagnosing crashes. May also report access violations that host "
+            "code handles itself.",
+            "General");
 
 namespace xe {
 
@@ -547,12 +553,15 @@ void Emulator::LaunchNextTitle() {
 }
 
 #if XE_PLATFORM_WIN32
-// Diagnosis: an exception outside guest code that nothing handles kills the
-// process silently. Write its address and the host call stack (symbolized
-// with dbghelp when available) to xenia_host_crash.txt in the working folder.
+// Diagnosis (cvars::log_host_exceptions): an exception outside guest code that
+// nothing handles kills the process silently. Write its address and the host
+// call stack (symbolized with dbghelp when available) to xenia_host_crash.txt
+// in the working folder. This is a vectored handler: an access violation that
+// host code handles itself later (__try/__except) is written as well.
 static void LogHostException(Exception* ex) {
   static bool logged = false;
-  if (logged || ex->code() != Exception::Code::kAccessViolation) {
+  if (!cvars::log_host_exceptions || logged ||
+      ex->code() != Exception::Code::kAccessViolation) {
     return;
   }
   logged = true;
@@ -573,10 +582,9 @@ static void LogHostException(Exception* ex) {
       dbghelp ? (SymInitializeFn)GetProcAddress(dbghelp, "SymInitialize")
               : nullptr;
   SymFromAddrFn sym_from_addr =
-      dbghelp ? (SymFromAddrFn)GetProcAddress(dbghelp, "SymFromAddr")
-              : nullptr;
-  bool symbols = sym_init && sym_from_addr &&
-                 sym_init(GetCurrentProcess(), nullptr, TRUE);
+      dbghelp ? (SymFromAddrFn)GetProcAddress(dbghelp, "SymFromAddr") : nullptr;
+  bool symbols =
+      sym_init && sym_from_addr && sym_init(GetCurrentProcess(), nullptr, TRUE);
   void* frames[64];
   USHORT count = RtlCaptureStackBackTrace(0, 64, frames, nullptr);
   std::vector<uint64_t> addresses;

@@ -24,6 +24,7 @@
 #include "xenia/base/logging.h"
 #include "xenia/base/math.h"
 #include "xenia/base/memory.h"
+#include "xenia/cpu/cpu_flags.h"
 #include "xenia/cpu/function.h"
 #include "xenia/cpu/module.h"
 
@@ -120,8 +121,10 @@ bool X64CodeCache::Initialize() {
     }
   }
 
+  dynamic_code_enabled_ = cvars::dynamic_code;
+
   // Preallocate the function map to a large, reasonable size.
-  generated_code_map_.reserve(kMaximumFunctionCount);
+  generated_code_map_.reserve(maximum_function_count());
 
   return true;
 }
@@ -216,7 +219,7 @@ void X64CodeCache::PlaceGuestCode(uint32_t guest_address, void* machine_code,
         xe::FatalError(
             "Code cache full (dynamic code: it was never safe to recycle)");
       }
-    } else if (high_mark > kDynamicZoneOffset) {
+    } else if (high_mark > static_code_end()) {
       xe::FatalError("Code cache full (host code for guest functions)");
     }
 
@@ -242,7 +245,7 @@ void X64CodeCache::PlaceGuestCode(uint32_t guest_address, void* machine_code,
       if (dynamic || high_mark <= old_commit_mark) break;
 
       new_commit_mark = old_commit_mark + 16_MiB;
-      XELOGI("Code cache: {} MB of host code, {} functions",
+      XELOGD("Code cache: {} MB of host code, {} functions",
              new_commit_mark >> 20, generated_code_map_.size());
       if (generated_code_execute_base_ == generated_code_write_base_) {
         xe::memory::AllocFixed(generated_code_execute_base_, new_commit_mark,
@@ -349,6 +352,9 @@ uint32_t X64CodeCache::PlaceData(const void* data, size_t length) {
 }
 
 void X64CodeCache::AddDynamicRange(uint32_t low, uint32_t high) {
+  if (!dynamic_code_enabled_) {
+    return;
+  }
   auto global_lock = global_critical_region_.Acquire();
   if (dynamic_ranges_.empty()) {
     // The whole zone is committed once (it is refilled from its start).

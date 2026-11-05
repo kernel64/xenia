@@ -37,6 +37,7 @@ DECLARE_bool(break_condition_truncate);
 
 DECLARE_bool(break_on_debugbreak);
 
+DECLARE_bool(dynamic_code);
 DECLARE_int32(dynamic_code_window);
 
 DECLARE_bool(ppc_profile);

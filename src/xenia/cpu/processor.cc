@@ -7,8 +7,9 @@
  ******************************************************************************
  */
 
-#include <algorithm>
 #include "xenia/cpu/processor.h"
+
+#include <algorithm>
 
 #include "xenia/base/assert.h"
 #include "xenia/base/atomic.h"
@@ -261,6 +262,9 @@ Function* Processor::ResolveFunction(uint32_t address) {
 }
 
 void Processor::AddDynamicCodeRange(uint32_t low, uint32_t high) {
+  if (!cvars::dynamic_code || low >= high) {
+    return;
+  }
   auto global_lock = global_critical_region_.Acquire();
   dynamic_code_ranges_.emplace_back(low, high);
   backend_->AddDynamicCodeRange(low, high);
@@ -324,8 +328,8 @@ void Processor::InvalidateCodeRange(uint32_t address, uint32_t size) {
   }
   for (const auto& fn_range : dropped) {
     // Unindex it from every page it covers (it may be listed several times).
-    for (uint32_t page = fn_range.first >> 12;
-         page <= (fn_range.second >> 12); ++page) {
+    for (uint32_t page = fn_range.first >> 12; page <= (fn_range.second >> 12);
+         ++page) {
       auto it = dynamic_code_pages_.find(page);
       if (it == dynamic_code_pages_.end()) {
         continue;

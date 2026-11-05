@@ -18,15 +18,15 @@
 #include <vector>
 
 #include "xenia/base/atomic.h"
+#include "xenia/base/byte_order.h"
 #include "xenia/base/logging.h"
+#include "xenia/base/math.h"
+#include "xenia/cpu/cpu_flags.h"
 #include "xenia/cpu/ppc/ppc_context.h"
 #include "xenia/cpu/ppc/ppc_emit.h"
 #include "xenia/cpu/ppc/ppc_opcode_info.h"
 #include "xenia/cpu/ppc/ppc_translator.h"
 #include "xenia/cpu/processor.h"
-#include "xenia/base/byte_order.h"
-#include "xenia/base/math.h"
-#include "xenia/cpu/cpu_flags.h"
 
 namespace xe {
 namespace cpu {
@@ -114,8 +114,10 @@ bool PPCFrontend::Initialize() {
       processor_->DefineBuiltin("LeaveGlobalLock", LeaveGlobalLock, arg0, arg1);
   builtins_.syscall_handler = processor_->DefineBuiltin(
       "SyscallHandler", SyscallHandler, nullptr, nullptr);
-  builtins_.profile_insn =
-      processor_->DefineBuiltin("ProfileInsn", ProfileInsn, nullptr, nullptr);
+  if (cvars::ppc_profile) {
+    builtins_.profile_insn =
+        processor_->DefineBuiltin("ProfileInsn", ProfileInsn, nullptr, nullptr);
+  }
   return true;
 }
 

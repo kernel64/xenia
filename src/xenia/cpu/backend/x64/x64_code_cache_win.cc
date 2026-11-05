@@ -166,8 +166,10 @@ bool Win32X64CodeCache::Initialize() {
 
   // Compute total number of unwind entries we should allocate.
   // We don't support reallocing right now, so this should be high.
-  unwind_table_.resize(kMaximumFunctionCount);
-  dyn_unwind_table_.resize(kMaximumFunctionCount);
+  unwind_table_.resize(maximum_function_count());
+  if (dynamic_code_enabled_) {
+    dyn_unwind_table_.resize(maximum_function_count());
+  }
 
   // Check if this version of Windows supports growable function tables.
   auto ntdll_handle = GetModuleHandleW(L"ntdll.dll");
@@ -194,11 +196,11 @@ bool Win32X64CodeCache::Initialize() {
             DWORD(unwind_table_.size()),
             reinterpret_cast<ULONG_PTR>(generated_code_execute_base_),
             reinterpret_cast<ULONG_PTR>(generated_code_execute_base_ +
-                                        kDynamicZoneOffset))) {
+                                        static_code_end()))) {
       XELOGE("Unable to create unwind function table");
       return false;
     }
-    if (!AddDynamicUnwindTable()) {
+    if (dynamic_code_enabled_ && !AddDynamicUnwindTable()) {
       XELOGE("Unable to create the dynamic code unwind function table");
       return false;
     }
@@ -276,7 +278,7 @@ Win32X64CodeCache::UnwindReservation
 Win32X64CodeCache::RequestUnwindReservation(uint8_t* entry_address) {
   std::atomic<uint32_t>& count =
       reserving_dynamic_ ? dyn_unwind_table_count_ : unwind_table_count_;
-  if (count >= kMaximumFunctionCount) {
+  if (count >= maximum_function_count()) {
     xe::FatalError("Code cache: too many functions (unwind table full)");
   }
   UnwindReservation unwind_reservation;
@@ -292,10 +294,9 @@ void Win32X64CodeCache::PlaceCode(uint32_t guest_address, void* machine_code,
                                   void* code_execute_address,
                                   UnwindReservation unwind_reservation) {
   // Add unwind info.
-  InitializeUnwindEntry(unwind_reservation.entry_address,
-                        unwind_reservation.table_slot,
-                        unwind_reservation.dynamic, code_execute_address,
-                        func_info);
+  InitializeUnwindEntry(
+      unwind_reservation.entry_address, unwind_reservation.table_slot,
+      unwind_reservation.dynamic, code_execute_address, func_info);
 
   if (supports_growable_table_) {
     // Notify that the unwind table has grown.
@@ -378,12 +379,12 @@ void Win32X64CodeCache::InitializeUnwindEntry(
   }
 
   // Add entry. Addresses are relative to the start of its table's range.
-  uint8_t* range_base = generated_code_execute_base_ +
-                        (dynamic ? kDynamicZoneOffset : 0);
+  uint8_t* range_base =
+      generated_code_execute_base_ + (dynamic ? kDynamicZoneOffset : 0);
   auto& fn_entry = dynamic ? dyn_unwind_table_[unwind_table_slot]
                            : unwind_table_[unwind_table_slot];
-  fn_entry.BeginAddress = DWORD(
-      reinterpret_cast<uint8_t*>(code_execute_address) - range_base);
+  fn_entry.BeginAddress =
+      DWORD(reinterpret_cast<uint8_t*>(code_execute_address) - range_base);
   fn_entry.EndAddress =
       DWORD(fn_entry.BeginAddress + func_info.code_size.total);
   fn_entry.UnwindData = DWORD(unwind_entry_address - range_base);

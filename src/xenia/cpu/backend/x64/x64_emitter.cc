@@ -490,8 +490,7 @@ void X64Emitter::CallIndirect(const hir::Instr* instr,
       mov(eax, dword[rsp + StackLayout::GUEST_RET_ADDR]);
       for (size_t r = 0; r < ranges.size(); ++r) {
         Xbyak::Label next_range;
-        Xbyak::Label& miss =
-            r + 1 < ranges.size() ? next_range : not_dynamic;
+        Xbyak::Label& miss = r + 1 < ranges.size() ? next_range : not_dynamic;
         cmp(eax, ranges[r].first);
         jb(miss, CodeGenerator::T_NEAR);
         cmp(eax, ranges[r].second);

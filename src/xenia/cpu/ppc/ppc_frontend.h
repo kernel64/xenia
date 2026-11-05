@@ -34,7 +34,7 @@ struct PPCBuiltins {
   Function* enter_global_lock;
   Function* leave_global_lock;
   Function* syscall_handler;
-  Function* profile_insn;   // cvars::ppc_profile
+  Function* profile_insn = nullptr;  // Only with cvars::ppc_profile.
 };
 
 class PPCFrontend {

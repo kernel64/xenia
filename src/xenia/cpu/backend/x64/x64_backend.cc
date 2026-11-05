@@ -163,7 +163,9 @@ void X64Backend::AddDynamicCodeRange(uint32_t low, uint32_t high) {
   code_cache_->AddDynamicRange(low, high);
 }
 
-size_t X64Backend::DynamicCodeUsed() { return code_cache_->dynamic_code_used(); }
+size_t X64Backend::DynamicCodeUsed() {
+  return code_cache_->dynamic_code_used();
+}
 
 size_t X64Backend::DynamicCodeCapacity() {
   return code_cache_->dynamic_code_capacity();

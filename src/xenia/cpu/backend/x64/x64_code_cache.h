@@ -96,7 +96,8 @@ class X64CodeCache : public CodeCache {
     return dynamic_code_offset_ - kDynamicZoneOffset;
   }
   size_t dynamic_code_capacity() const {
-    return kGeneratedCodeSize + 1 - kDynamicZoneOffset;
+    return dynamic_code_enabled_ ? kGeneratedCodeSize + 1 - kDynamicZoneOffset
+                                 : 0;
   }
   virtual bool IsDynamicCodeOnStack() { return true; }
   // Forgets every function placed in the dynamic zone (the processor has
@@ -120,11 +121,26 @@ class X64CodeCache : public CodeCache {
   // This is picked to be high enough to cover whatever we can reasonably
   // expect. If we hit issues with this it probably means some corner case
   // in analysis triggering.
-  // Titles with their own recompiler (dynamic code) have their functions
-  // translated again after each rewrite: far more than 100000 over a session.
-  static const size_t kMaximumFunctionCount = 1000000;
-  // Start of the dynamic code zone in the generated code region (128 MB each).
+  static const size_t kMaximumFunctionCount = 100000;
+  // With cvars::dynamic_code, titles with their own recompiler have their
+  // functions translated again after each rewrite: far more than 100000 over
+  // a session.
+  static const size_t kMaximumFunctionCountDynamic = 1000000;
+  // With cvars::dynamic_code, start of the dynamic code zone in the generated
+  // code region (128 MB each). Otherwise the whole region holds static code.
   static const size_t kDynamicZoneOffset = 0x08000000;
+
+  // Whether cvars::dynamic_code was set when the cache was initialized: the
+  // dynamic code zone exists, AddDynamicRange may be called.
+  bool dynamic_code_enabled_ = false;
+  size_t maximum_function_count() const {
+    return dynamic_code_enabled_ ? kMaximumFunctionCountDynamic
+                                 : kMaximumFunctionCount;
+  }
+  // End (offset in the generated code region) of the zone for static code.
+  size_t static_code_end() const {
+    return dynamic_code_enabled_ ? kDynamicZoneOffset : kGeneratedCodeSize + 1;
+  }
 
   struct UnwindReservation {
     size_t data_size = 0;
@@ -145,7 +161,8 @@ class X64CodeCache : public CodeCache {
   virtual void ResetDynamicUnwind() {}
 
   // Dynamic code zone (see AddDynamicRange): guest ranges, fill offset (from
-  // the start of the generated code region) and its own host PC -> function map.
+  // the start of the generated code region) and its own host PC -> function
+  // map.
   std::vector<std::pair<uint32_t, uint32_t>> dynamic_ranges_;
   size_t dynamic_code_offset_ = kDynamicZoneOffset;
   std::vector<std::pair<uint64_t, GuestFunction*>> dynamic_code_map_;

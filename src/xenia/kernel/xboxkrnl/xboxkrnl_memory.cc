@@ -440,8 +440,8 @@ DECLARE_XBOXKRNL_EXPORT1(MmSetAddressProtect, kMemory, kImplemented);
 // Called after a title writes code (its own recompiler): translated functions
 // overlapping the range are dropped and translated again when next called.
 void KeSweepIcacheRange_entry(lpvoid_t base_address, dword_t size) {
-  kernel_state()->processor()->InvalidateCodeRange(
-      base_address.guest_address(), size);
+  kernel_state()->processor()->InvalidateCodeRange(base_address.guest_address(),
+                                                   size);
 }
 DECLARE_XBOXKRNL_EXPORT2(KeSweepIcacheRange, kMemory, kImplemented,
                          kHighFrequency);

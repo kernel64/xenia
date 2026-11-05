@@ -172,7 +172,7 @@ bool PPCHIRBuilder::Emit(GuestFunction* function, uint32_t flags) {
 
     MaybeBreakOnInstruction(address);
 
-    if (cvars::ppc_profile) {
+    if (cvars::ppc_profile && builtins()->profile_insn) {
       // Instruction profile (ProfileInsn in ppc_frontend.cc): the address in
       // dynamic_reserved[0], the guest registers in the context.
       StoreContext(offsetof(PPCContext, dynamic_reserved),

@@ -50,7 +50,8 @@ DEFINE_bool(d3d12_readback_resolve_skip_write_combined, false,
             "With d3d12_readback_resolve, do not read back resolves into "
             "write-combined memory (usually textures the GPU samples later, "
             "which the CPU does not read): each readback waits for the GPU. "
-            "Harissa64 reads its copy-backs from CPU-cached memory only.",
+            "Titles that read resolved data back with the CPU from cached "
+            "memory only keep their readbacks.",
             "D3D12");
 DEFINE_bool(d3d12_submit_on_primary_buffer_end, true,
             "Submit the command list when a PM4 primary buffer ends if it's "
