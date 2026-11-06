@@ -99,7 +99,15 @@ class X64CodeCache : public CodeCache {
     return dynamic_code_enabled_ ? kGeneratedCodeSize + 1 - kDynamicZoneOffset
                                  : 0;
   }
+  // Whether host code of the dynamic zone is on the calling thread's stack (a
+  // frame of it is active). Without a way to tell, true (never recycled).
   virtual bool IsDynamicCodeOnStack() { return true; }
+  // Whether a 64-bit word in [stack_low, stack_high) points into the dynamic
+  // zone. Every active frame of dynamic code has its return address there, so
+  // a stack range from the current frame up to the top of the stack never
+  // misses one; a stale value in it only defers recycling.
+  bool IsDynamicCodeInStackRange(const void* stack_low,
+                                 const void* stack_high) const;
   // Forgets every function placed in the dynamic zone (the processor has
   // dropped them from its lookups first) and starts filling it again.
   void ResetDynamicCode();

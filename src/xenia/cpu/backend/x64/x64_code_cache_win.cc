@@ -11,6 +11,7 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <intrin.h>
 
 #include "xenia/base/assert.h"
 #include "xenia/base/clock.h"
@@ -250,28 +251,19 @@ void Win32X64CodeCache::ResetDynamicUnwind() {
   }
 }
 
-bool Win32X64CodeCache::IsDynamicCodeOnStack() {
-  // Every frame of this thread, a batch at a time: is one in the dynamic zone?
-  const uintptr_t low =
-      reinterpret_cast<uintptr_t>(generated_code_execute_base_) +
-      kDynamicZoneOffset;
-  const uintptr_t high =
-      reinterpret_cast<uintptr_t>(generated_code_execute_base_) +
-      kGeneratedCodeSize + 1;
-  void* frames[62];
-  for (ULONG skip = 0; skip < 8192; skip += 62) {
-    USHORT n = RtlCaptureStackBackTrace(skip, 62, frames, nullptr);
-    for (USHORT i = 0; i < n; ++i) {
-      uintptr_t pc = reinterpret_cast<uintptr_t>(frames[i]);
-      if (pc >= low && pc < high) {
-        return true;
-      }
-    }
-    if (n < 62) {
-      return false;
-    }
+__declspec(noinline) bool Win32X64CodeCache::IsDynamicCodeOnStack() {
+  // The stack's words are checked rather than its frames: walking the frames
+  // (RtlCaptureStackBackTrace) stops at the host call thunks and misses the
+  // generated code calling them. From this function's return address (above
+  // it only the callers' frames, below it this call's own data) up to the top
+  // of the stack.
+  ULONG_PTR stack_low = 0, stack_high = 0;
+  GetCurrentThreadStackLimits(&stack_low, &stack_high);
+  if (!stack_high) {
+    return true;
   }
-  return true;  // too deep to tell
+  return IsDynamicCodeInStackRange(_AddressOfReturnAddress(),
+                                   reinterpret_cast<const void*>(stack_high));
 }
 
 Win32X64CodeCache::UnwindReservation

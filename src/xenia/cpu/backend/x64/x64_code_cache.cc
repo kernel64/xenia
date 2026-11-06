@@ -378,6 +378,26 @@ void X64CodeCache::AddDynamicRange(uint32_t low, uint32_t high) {
   dynamic_ranges_.emplace_back(low, high);
 }
 
+bool X64CodeCache::IsDynamicCodeInStackRange(const void* stack_low,
+                                             const void* stack_high) const {
+  if (!dynamic_code_enabled_) {
+    return false;
+  }
+  const uint64_t low =
+      uint64_t(uintptr_t(generated_code_execute_base_)) + kDynamicZoneOffset;
+  const uint64_t high = uint64_t(uintptr_t(generated_code_execute_base_)) +
+                        kGeneratedCodeSize + 1;
+  uintptr_t address = xe::round_up(uintptr_t(stack_low), sizeof(uint64_t));
+  for (; address + sizeof(uint64_t) <= uintptr_t(stack_high);
+       address += sizeof(uint64_t)) {
+    uint64_t value = *reinterpret_cast<const uint64_t*>(address);
+    if (value >= low && value < high) {
+      return true;
+    }
+  }
+  return false;
+}
+
 void X64CodeCache::ResetDynamicCode() {
   auto global_lock = global_critical_region_.Acquire();
   dynamic_code_offset_ = kDynamicZoneOffset;

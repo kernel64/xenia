@@ -13,8 +13,17 @@
 
 #include "xenia/cpu/testing/util.h"
 
+#include "xenia/base/platform.h"
+#include "xenia/cpu/backend/x64/x64_code_cache.h"
 #include "xenia/cpu/cpu_flags.h"
 #include "xenia/cpu/entry_table.h"
+#include "xenia/cpu/thread_state.h"
+
+#if XE_PLATFORM_WIN32
+#include "xenia/base/platform_win.h"
+#else
+#include <pthread.h>
+#endif
 
 using namespace xe::cpu::hir;
 using namespace xe::cpu;
@@ -38,21 +47,65 @@ class DynamicCodeCvar {
 constexpr uint32_t kCodeLow = 0x80000000;
 constexpr uint32_t kCodeHigh = 0x80010000;
 
+// Highest address of the calling thread's stack.
+const void* GetStackTop() {
+#if XE_PLATFORM_WIN32
+  ULONG_PTR low = 0, high = 0;
+  GetCurrentThreadStackLimits(&low, &high);
+  return reinterpret_cast<const void*>(high);
+#else
+  pthread_attr_t attr;
+  REQUIRE(pthread_getattr_np(pthread_self(), &attr) == 0);
+  void* address = nullptr;
+  size_t size = 0;
+  REQUIRE(pthread_attr_getstack(&attr, &address, &size) == 0);
+  pthread_attr_destroy(&attr);
+  return static_cast<uint8_t*>(address) + size;
+#endif
+}
+
+// What a builtin called from generated code saw (see StackProbe).
+struct StackProbeResult {
+  bool called = false;
+  bool on_stack = false;    // Backend::DynamicCodeOnStack.
+  bool in_scanned = false;  // X64CodeCache::IsDynamicCodeInStackRange.
+};
+
+void StackProbe(ppc::PPCContext* ppc_context, void* arg0, void* arg1) {
+  auto processor = static_cast<Processor*>(arg0);
+  auto result = static_cast<StackProbeResult*>(arg1);
+  auto code_cache = static_cast<backend::x64::X64Backend*>(processor->backend())
+                        ->code_cache();
+  volatile uint64_t marker = 0;
+  result->called = true;
+  result->on_stack = processor->backend()->DynamicCodeOnStack();
+  result->in_scanned = code_cache->IsDynamicCodeInStackRange(
+      const_cast<const uint64_t*>(&marker), GetStackTop());
+}
+
 // A processor (x64 backend) with one test module covering
-// [kCodeLow, kCodeHigh): every address there is a function returning at once.
+// [kCodeLow, kCodeHigh): every address there is a function returning at once,
+// or, with a probe, calling StackProbe then returning.
 class DynamicCodeTest {
  public:
-  DynamicCodeTest() {
+  explicit DynamicCodeTest(StackProbeResult* probe_result = nullptr) {
     memory_ = std::make_unique<xe::Memory>();
     memory_->Initialize();
     processor_ = std::make_unique<Processor>(memory_.get(), nullptr);
     processor_->Setup(std::make_unique<backend::x64::X64Backend>());
+    if (probe_result) {
+      probe_ = processor_->DefineBuiltin("StackProbe", StackProbe,
+                                         processor_.get(), probe_result);
+    }
     auto module = std::make_unique<TestModule>(
         processor_.get(), "Test",
         [](uint32_t address) {
           return address >= kCodeLow && address < kCodeHigh;
         },
-        [](HIRBuilder& b) {
+        [this](HIRBuilder& b) {
+          if (probe_) {
+            b.CallExtern(probe_);
+          }
           b.Return();
           return true;
         });
@@ -72,6 +125,7 @@ class DynamicCodeTest {
   std::unique_ptr<xe::Memory> memory_;
   std::unique_ptr<Processor> processor_;
   Module* module_ = nullptr;
+  Function* probe_ = nullptr;
 };
 
 }  // namespace
@@ -211,4 +265,37 @@ TEST_CASE("MODULE_FORGET_FUNCTION", "[dynamic_code]") {
   REQUIRE(module->DeclareFunction(kCodeLow, &fresh) ==
           Symbol::Status::kDefined);
   REQUIRE(fresh != function);
+}
+
+TEST_CASE("DYNAMIC_CODE_ON_STACK", "[dynamic_code]") {
+  DynamicCodeCvar cvar(true);
+  StackProbeResult result;
+  DynamicCodeTest test(&result);
+  Processor* processor = test.processor();
+  processor->AddDynamicCodeRange(kCodeLow, kCodeLow + 0x1000);
+  auto backend = processor->backend();
+  ThreadState thread_state(processor, 0x100);
+  auto run = [&](uint32_t address) {
+    result = StackProbeResult();
+    Function* function = processor->ResolveFunction(address);
+    REQUIRE(function != nullptr);
+    function->Call(&thread_state, 0xBCBCBCBC);
+    REQUIRE(result.called);
+  };
+
+  // No generated code running.
+  REQUIRE_FALSE(backend->DynamicCodeOnStack());
+
+  // Called from a static function: no dynamic frame.
+  run(kCodeLow + 0x2000);
+  REQUIRE_FALSE(result.on_stack);
+  REQUIRE_FALSE(result.in_scanned);
+
+  // Called from a dynamic function: its frame is found by both.
+  run(kCodeLow);
+  REQUIRE(result.on_stack);
+  REQUIRE(result.in_scanned);
+
+  // Returned: none anymore.
+  REQUIRE_FALSE(backend->DynamicCodeOnStack());
 }

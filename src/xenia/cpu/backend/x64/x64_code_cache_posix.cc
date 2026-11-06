@@ -9,6 +9,8 @@
 
 #include "xenia/cpu/backend/x64/x64_code_cache.h"
 
+#include <pthread.h>
+
 namespace xe {
 namespace cpu {
 namespace backend {
@@ -22,6 +24,7 @@ class PosixX64CodeCache : public X64CodeCache {
   bool Initialize() override;
 
   void* LookupUnwindInfo(uint64_t host_pc) override { return nullptr; }
+  bool IsDynamicCodeOnStack() override;
 
  private:
   /*
@@ -44,6 +47,27 @@ PosixX64CodeCache::PosixX64CodeCache() = default;
 PosixX64CodeCache::~PosixX64CodeCache() = default;
 
 bool PosixX64CodeCache::Initialize() { return X64CodeCache::Initialize(); }
+
+__attribute__((noinline)) bool PosixX64CodeCache::IsDynamicCodeOnStack() {
+  // Generated code has no unwind information or frame pointers here, so the
+  // stack can't be walked frame by frame: its words are checked instead, from
+  // this function's return address (above it only the callers' frames, below
+  // it this call's own data) up to the top of the stack.
+  pthread_attr_t attr;
+  if (pthread_getattr_np(pthread_self(), &attr)) {
+    return true;
+  }
+  void* stack_address = nullptr;
+  size_t stack_size = 0;
+  bool have_stack = !pthread_attr_getstack(&attr, &stack_address, &stack_size);
+  pthread_attr_destroy(&attr);
+  if (!have_stack) {
+    return true;
+  }
+  return IsDynamicCodeInStackRange(
+      static_cast<uint8_t*>(__builtin_frame_address(0)) + sizeof(void*),
+      static_cast<uint8_t*>(stack_address) + stack_size);
+}
 
 }  // namespace x64
 }  // namespace backend
