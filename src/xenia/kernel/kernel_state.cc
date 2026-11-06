@@ -509,6 +509,12 @@ void KernelState::TerminateTitle() {
     if (!XThread::IsInThread(it->second) && it->second->is_guest_thread()) {
       auto thread = it->second;
 
+      // Erase it from the thread list first. Terminating it below may release
+      // its last reference, and its destructor removes it from the list too
+      // (UnregisterThread) while the lock is released: erasing the same
+      // element again afterwards freed it twice.
+      it = threads_by_id_.erase(it);
+
       if (thread->is_running()) {
         // Need to step the thread to a safe point (returns it to guest code
         // so it's guaranteed to not be holding any locks / in host kernel
@@ -521,10 +527,11 @@ void KernelState::TerminateTitle() {
         processor_->StepToGuestSafePoint(thread->thread_id());
         thread->Terminate(0);
         global_lock.lock();
-      }
 
-      // Erase it from the thread list.
-      it = threads_by_id_.erase(it);
+        // Other threads may have changed the list meanwhile: start over (the
+        // threads handled so far are no longer in it).
+        it = threads_by_id_.begin();
+      }
     } else {
       ++it;
     }
