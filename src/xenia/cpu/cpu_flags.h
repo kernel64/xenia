@@ -37,4 +37,9 @@ DECLARE_bool(break_condition_truncate);
 
 DECLARE_bool(break_on_debugbreak);
 
+DECLARE_bool(ppc_profile);
+DECLARE_path(ppc_profile_out);
+DECLARE_uint64(ppc_profile_delay);
+DECLARE_uint64(ppc_profile_count);
+
 #endif  // XENIA_CPU_CPU_FLAGS_H_

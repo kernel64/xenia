@@ -170,6 +170,14 @@ bool PPCHIRBuilder::Emit(GuestFunction* function, uint32_t flags) {
 
     MaybeBreakOnInstruction(address);
 
+    if (cvars::ppc_profile && builtins()->profile_insn) {
+      // Instruction profile (ppc_profiler.h): the address in scratch, the
+      // guest registers in the context.
+      StoreContext(offsetof(PPCContext, scratch), LoadConstantUint64(address));
+      ContextBarrier();
+      CallExtern(builtins()->profile_insn);
+    }
+
     InstrData i;
     i.address = address;
     i.code = code;

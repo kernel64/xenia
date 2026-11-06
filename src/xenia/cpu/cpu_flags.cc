@@ -55,3 +55,19 @@ DEFINE_bool(break_condition_truncate, true, "truncate value to 32-bits", "CPU");
 
 DEFINE_bool(break_on_debugbreak, true, "int3 on JITed __debugbreak requests.",
             "CPU");
+
+DEFINE_bool(ppc_profile, false,
+            "Instruction profile of guest code (ppc_profiler.h): a call before "
+            "every guest instruction records how often it ran, taken "
+            "branches, dependencies, load-hit-stores and misses in a cache "
+            "model. Very slow.",
+            "CPU");
+DEFINE_path(ppc_profile_out, "ppcprof.bin",
+            "ppc_profile: file the profile is written to.", "CPU");
+DEFINE_uint64(ppc_profile_delay, 60,
+              "ppc_profile: seconds (wall clock) before recording starts.",
+              "CPU");
+DEFINE_uint64(ppc_profile_count, 200000000,
+              "ppc_profile: instructions of the busiest thread to record, then "
+              "the profile is written.",
+              "CPU");
