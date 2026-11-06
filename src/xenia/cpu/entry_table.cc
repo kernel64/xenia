@@ -87,5 +87,23 @@ std::vector<Function*> EntryTable::FindWithAddress(uint32_t address) {
   return fns;
 }
 
+bool EntryTable::Remove(uint32_t address, Function** out_function) {
+  auto global_lock = global_critical_region_.Acquire();
+  *out_function = nullptr;
+  const auto& it = map_.find(address);
+  if (it == map_.end()) {
+    return false;
+  }
+  Entry* entry = it->second;
+  if (entry->status == Entry::STATUS_COMPILING ||
+      entry->status == Entry::STATUS_NEW) {
+    // Being translated by another thread: leave it.
+    return false;
+  }
+  *out_function = entry->function;
+  map_.erase(it);
+  return true;
+}
+
 }  // namespace cpu
 }  // namespace xe

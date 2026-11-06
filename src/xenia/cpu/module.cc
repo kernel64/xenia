@@ -110,6 +110,21 @@ Symbol::Status Module::DeclareFunction(uint32_t address,
   return status;
 }
 
+void Module::ForgetFunction(uint32_t address) {
+  auto global_lock = global_critical_region_.Acquire();
+  auto it = map_.find(address);
+  if (it == map_.end()) {
+    return;
+  }
+  Symbol* symbol = it->second;
+  if (symbol->type() != Symbol::Type::kFunction ||
+      symbol->status() == Symbol::Status::kDeclaring ||
+      symbol->status() == Symbol::Status::kDefining) {
+    return;
+  }
+  map_.erase(it);
+}
+
 Symbol::Status Module::DeclareVariable(uint32_t address, Symbol** out_symbol) {
   Symbol::Status status =
       DeclareSymbol(Symbol::Type::kVariable, address, out_symbol);

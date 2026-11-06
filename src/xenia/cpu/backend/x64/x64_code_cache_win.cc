@@ -11,6 +11,7 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <intrin.h>
 
 #include "xenia/base/assert.h"
 #include "xenia/base/clock.h"
@@ -103,6 +104,7 @@ class Win32X64CodeCache : public X64CodeCache {
   bool Initialize() override;
 
   void* LookupUnwindInfo(uint64_t host_pc) override;
+  bool IsDynamicCodeOnStack() override;
 
  private:
   UnwindReservation RequestUnwindReservation(uint8_t* entry_address) override;
@@ -111,9 +113,11 @@ class Win32X64CodeCache : public X64CodeCache {
                  UnwindReservation unwind_reservation) override;
 
   void InitializeUnwindEntry(uint8_t* unwind_entry_address,
-                             size_t unwind_table_slot,
+                             size_t unwind_table_slot, bool dynamic,
                              void* code_execute_address,
                              const EmitFunctionInfo& func_info);
+  void ResetDynamicUnwind() override;
+  bool AddDynamicUnwindTable();
 
   // Growable function table system handle.
   void* unwind_table_handle_ = nullptr;
@@ -121,6 +125,11 @@ class Win32X64CodeCache : public X64CodeCache {
   std::vector<RUNTIME_FUNCTION> unwind_table_;
   // Current number of entries in the table.
   std::atomic<uint32_t> unwind_table_count_ = {0};
+  // The same for the dynamic code zone (kDynamicZoneOffset on): a table of
+  // its own, deleted and created again when the zone is emptied.
+  void* dyn_unwind_table_handle_ = nullptr;
+  std::vector<RUNTIME_FUNCTION> dyn_unwind_table_;
+  std::atomic<uint32_t> dyn_unwind_table_count_ = {0};
   // Does this version of Windows support growable funciton tables?
   bool supports_growable_table_ = false;
 
@@ -140,6 +149,9 @@ Win32X64CodeCache::~Win32X64CodeCache() {
     if (unwind_table_handle_) {
       delete_growable_table_(unwind_table_handle_);
     }
+    if (dyn_unwind_table_handle_) {
+      delete_growable_table_(dyn_unwind_table_handle_);
+    }
   } else {
     if (generated_code_execute_base_) {
       RtlDeleteFunctionTable(reinterpret_cast<PRUNTIME_FUNCTION>(
@@ -155,7 +167,10 @@ bool Win32X64CodeCache::Initialize() {
 
   // Compute total number of unwind entries we should allocate.
   // We don't support reallocing right now, so this should be high.
-  unwind_table_.resize(kMaximumFunctionCount);
+  unwind_table_.resize(maximum_function_count());
+  if (dynamic_code_enabled_) {
+    dyn_unwind_table_.resize(maximum_function_count());
+  }
 
   // Check if this version of Windows supports growable function tables.
   auto ntdll_handle = GetModuleHandleW(L"ntdll.dll");
@@ -182,8 +197,12 @@ bool Win32X64CodeCache::Initialize() {
             DWORD(unwind_table_.size()),
             reinterpret_cast<ULONG_PTR>(generated_code_execute_base_),
             reinterpret_cast<ULONG_PTR>(generated_code_execute_base_ +
-                                        kGeneratedCodeSize))) {
+                                        static_code_end()))) {
       XELOGE("Unable to create unwind function table");
+      return false;
+    }
+    if (dynamic_code_enabled_ && !AddDynamicUnwindTable()) {
+      XELOGE("Unable to create the dynamic code unwind function table");
       return false;
     }
   } else {
@@ -207,13 +226,58 @@ bool Win32X64CodeCache::Initialize() {
   return true;
 }
 
+bool Win32X64CodeCache::AddDynamicUnwindTable() {
+  dyn_unwind_table_count_ = 0;
+  return add_growable_table_(
+             &dyn_unwind_table_handle_, dyn_unwind_table_.data(), 0,
+             DWORD(dyn_unwind_table_.size()),
+             reinterpret_cast<ULONG_PTR>(generated_code_execute_base_ +
+                                         kDynamicZoneOffset),
+             reinterpret_cast<ULONG_PTR>(generated_code_execute_base_ +
+                                         kGeneratedCodeSize + 1)) == 0;
+}
+
+void Win32X64CodeCache::ResetDynamicUnwind() {
+  if (supports_growable_table_) {
+    if (dyn_unwind_table_handle_) {
+      delete_growable_table_(dyn_unwind_table_handle_);
+      dyn_unwind_table_handle_ = nullptr;
+    }
+    if (!AddDynamicUnwindTable()) {
+      xe::FatalError("Code cache: dynamic code unwind table lost");
+    }
+  } else {
+    dyn_unwind_table_count_ = 0;
+  }
+}
+
+__declspec(noinline) bool Win32X64CodeCache::IsDynamicCodeOnStack() {
+  // The stack's words are checked rather than its frames: walking the frames
+  // (RtlCaptureStackBackTrace) stops at the host call thunks and misses the
+  // generated code calling them. From this function's return address (above
+  // it only the callers' frames, below it this call's own data) up to the top
+  // of the stack.
+  ULONG_PTR stack_low = 0, stack_high = 0;
+  GetCurrentThreadStackLimits(&stack_low, &stack_high);
+  if (!stack_high) {
+    return true;
+  }
+  return IsDynamicCodeInStackRange(_AddressOfReturnAddress(),
+                                   reinterpret_cast<const void*>(stack_high));
+}
+
 Win32X64CodeCache::UnwindReservation
 Win32X64CodeCache::RequestUnwindReservation(uint8_t* entry_address) {
-  assert_false(unwind_table_count_ >= kMaximumFunctionCount);
+  std::atomic<uint32_t>& count =
+      reserving_dynamic_ ? dyn_unwind_table_count_ : unwind_table_count_;
+  if (count >= maximum_function_count()) {
+    xe::FatalError("Code cache: too many functions (unwind table full)");
+  }
   UnwindReservation unwind_reservation;
   unwind_reservation.data_size = xe::round_up(kUnwindInfoSize, 16);
-  unwind_reservation.table_slot = unwind_table_count_++;
+  unwind_reservation.table_slot = count++;
   unwind_reservation.entry_address = entry_address;
+  unwind_reservation.dynamic = reserving_dynamic_;
   return unwind_reservation;
 }
 
@@ -222,14 +286,18 @@ void Win32X64CodeCache::PlaceCode(uint32_t guest_address, void* machine_code,
                                   void* code_execute_address,
                                   UnwindReservation unwind_reservation) {
   // Add unwind info.
-  InitializeUnwindEntry(unwind_reservation.entry_address,
-                        unwind_reservation.table_slot, code_execute_address,
-                        func_info);
+  InitializeUnwindEntry(
+      unwind_reservation.entry_address, unwind_reservation.table_slot,
+      unwind_reservation.dynamic, code_execute_address, func_info);
 
   if (supports_growable_table_) {
     // Notify that the unwind table has grown.
     // We do this outside of the lock, but with the latest total count.
-    grow_table_(unwind_table_handle_, unwind_table_count_);
+    if (unwind_reservation.dynamic) {
+      grow_table_(dyn_unwind_table_handle_, dyn_unwind_table_count_);
+    } else {
+      grow_table_(unwind_table_handle_, unwind_table_count_);
+    }
   }
 
   // This isn't needed on x64 (probably), but is convention.
@@ -240,7 +308,7 @@ void Win32X64CodeCache::PlaceCode(uint32_t guest_address, void* machine_code,
 }
 
 void Win32X64CodeCache::InitializeUnwindEntry(
-    uint8_t* unwind_entry_address, size_t unwind_table_slot,
+    uint8_t* unwind_entry_address, size_t unwind_table_slot, bool dynamic,
     void* code_execute_address, const EmitFunctionInfo& func_info) {
   auto unwind_info = reinterpret_cast<UNWIND_INFO*>(unwind_entry_address);
   UNWIND_CODE* unwind_code = nullptr;
@@ -302,15 +370,16 @@ void Win32X64CodeCache::InitializeUnwindEntry(
                 sizeof(UNWIND_CODE));
   }
 
-  // Add entry.
-  auto& fn_entry = unwind_table_[unwind_table_slot];
+  // Add entry. Addresses are relative to the start of its table's range.
+  uint8_t* range_base =
+      generated_code_execute_base_ + (dynamic ? kDynamicZoneOffset : 0);
+  auto& fn_entry = dynamic ? dyn_unwind_table_[unwind_table_slot]
+                           : unwind_table_[unwind_table_slot];
   fn_entry.BeginAddress =
-      DWORD(reinterpret_cast<uint8_t*>(code_execute_address) -
-            generated_code_execute_base_);
+      DWORD(reinterpret_cast<uint8_t*>(code_execute_address) - range_base);
   fn_entry.EndAddress =
       DWORD(fn_entry.BeginAddress + func_info.code_size.total);
-  fn_entry.UnwindData =
-      DWORD(unwind_entry_address - generated_code_execute_base_);
+  fn_entry.UnwindData = DWORD(unwind_entry_address - range_base);
 }
 
 void* Win32X64CodeCache::LookupUnwindInfo(uint64_t host_pc) {

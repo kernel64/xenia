@@ -55,3 +55,16 @@ DEFINE_bool(break_condition_truncate, true, "truncate value to 32-bits", "CPU");
 
 DEFINE_bool(break_on_debugbreak, true, "int3 on JITed __debugbreak requests.",
             "CPU");
+
+DEFINE_bool(
+    dynamic_code, false,
+    "Support guest code generated at run time (a title's own "
+    "recompiler): code in sections linked writable + executable is "
+    "translated again after the title rewrites it (KeSweepIcacheRange), "
+    "with its host code in a zone of the code cache that is recycled.",
+    "CPU");
+DEFINE_int32(dynamic_code_window, 0,
+             "With dynamic_code, in code generated at run time, forward "
+             "branches farther than this many bytes from a function's start "
+             "end the function (tail calls).",
+             "CPU");

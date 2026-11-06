@@ -48,6 +48,19 @@ class Backend {
 
   virtual void CommitExecutableRange(uint32_t guest_low,
                                      uint32_t guest_high) = 0;
+  // The function at guest_address was dropped: calls through the
+  // indirection table must resolve (translate) it again.
+  virtual void ResetIndirection(uint32_t guest_address) {}
+
+  // Code generated at run time by the title (Processor::AddDynamicCodeRange):
+  // its host code lives in a zone of its own that can be emptied as a whole.
+  virtual void AddDynamicCodeRange(uint32_t low, uint32_t high) {}
+  virtual size_t DynamicCodeUsed() { return 0; }
+  virtual size_t DynamicCodeCapacity() { return 0; }
+  // Whether host code of that zone is on the calling thread's stack (it must
+  // not be emptied then: a return would land in recycled memory).
+  virtual bool DynamicCodeOnStack() { return true; }
+  virtual void ResetDynamicCode() {}
 
   virtual std::unique_ptr<Assembler> CreateAssembler() = 0;
 
